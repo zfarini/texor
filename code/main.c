@@ -116,6 +116,8 @@ void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
 			// fx = (x - min_x)
 			assert(fx < font.width);
 			assert(fy < font.height);
+            assert(fx >= 0);
+            assert(fy >= 0);
 			uint32_t s = font.pixels[fy * font.width + fx];
 			draw_buffer->pixels[y * draw_buffer->width + x] = s;
 			//
@@ -168,11 +170,14 @@ int cursor_y = 0;
 int cursor_w = 4;
 int cursor_h = FONT_CHAR_HEIGHT * 2;
 static int is_pressed[512];
-int offset_x = 0;
-int offset_y = 0;
+
 static char *lines[1024];
 static int line_count;
+static int mouse_x, mouse_y;
 
+int mouse_scroll_y = 0;
+
+int is_mouse_left_button_pressed = 0;
 //todo: weird behavior when I input the key on the left of 1
 void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 {
@@ -204,12 +209,15 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         }
 
 	}
+    //TODO next: mouse support? undo/redo,
 	//clear the screen
 	for (int y = 0; y < draw_buffer->height; y++)
 	{
 		for (int x = 0; x < draw_buffer->width; x++)
 			draw_buffer->pixels[y * draw_buffer->width + x] = 0;
 	}
+    
+    printf("%d\n", mouse_scroll_y);
 
 	if (is_pressed[SDL_SCANCODE_RETURN])
 	{
@@ -311,13 +319,15 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		lines[cursor_y][curr_line_len + text_len] = 0;
 	}
 
-	printf("%d\n", line_count);
 
 	//draw_char(draw_buffer, 'z', 0, 0, 4);
 	//draw_text(draw_buffer, "Hello World, I can draw Into the screen! cool right?\nHell yeah\nEven new lines lol", 100, 300, 3);
 	//draw_text(draw_buffer, "Hello World, I can draw Into the screen! cool right?\nHell yeah\nEven new lines lol", 100, 300, 3);
-	offset_x = 3 * 2 * FONT_CHAR_WIDTH + 10;
+    static int offset_x = 0;
+    static int offset_y = 0;
+	offset_x = 3 * 2 * FONT_CHAR_WIDTH + 10;//todo: the 3 is hardcoded in the mouse_cursor_x 
 
+    //move cursor to mouse positino
 
     //a
     //b -
@@ -327,7 +337,8 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	static float scroll_y = 0;
     static float scroll_x = 0;
     int cursor_visual_x = cursor_x;
-    for (int i = 0; lines[cursor_y][i]; i++)
+    int cursor_visual_y = cursor_y;
+    for (int i = 0; lines[cursor_y][i] && i < cursor_x; i++)
     {
         if (lines[cursor_y][i] == '\t')
             cursor_visual_x += 3;
@@ -342,17 +353,24 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	{
 		scroll_x =	(cursor_visual_x) * FONT_CHAR_WIDTH * 2;
 	}
-	if ((cursor_y + 1) * FONT_CHAR_HEIGHT * 2 >= draw_buffer->height)
+	if ((cursor_visual_y + 1) * FONT_CHAR_HEIGHT * 2 >= draw_buffer->height)
 	{
-		float new_scroll = (cursor_y + 1) * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
+		float new_scroll = (cursor_visual_y + 1) * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
 		if (new_scroll > scroll_y)
 			scroll_y = new_scroll;
 	}
-	if ((cursor_y) * FONT_CHAR_HEIGHT * 2 < scroll_y)
+	if ((cursor_visual_y) * FONT_CHAR_HEIGHT * 2 < scroll_y)
 	{
-		scroll_y =	(cursor_y) * FONT_CHAR_HEIGHT * 2;
+		scroll_y =	(cursor_visual_y) * FONT_CHAR_HEIGHT * 2;
 	}
-    
+#if 0 // TODO: for scroll we really need to understand where we are
+    static float dx = 0;
+    dx += mouse_scroll_y;
+    printf("dx = %f\n", dx);
+    scroll_y += dx;
+#endif
+ 
+
 	for (int i = 0; i < line_count; i++)
 	{
         char *s;
@@ -379,10 +397,11 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         }
 		draw_text(draw_buffer, lines[i], offset_x - scroll_x, y - scroll_y, 2);
 #if 1
-        for (int cy = y; cy < y + 2 * FONT_CHAR_HEIGHT && cy <draw_buffer->height; cy++)
+        for (int cy = y - scroll_y; cy < y + 2 * FONT_CHAR_HEIGHT && cy <draw_buffer->height; cy++)
         {
             for (int cx = 0; cx < offset_x && cx < draw_buffer->width; cx++)
             {
+                if (cy >= 0)
                 draw_buffer->pixels[cy * draw_buffer->width + cx] = 0;
             }
         }
@@ -401,9 +420,9 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		uint32_t c = (r << 24) | (g << 16) | (b << 8);
 		int min_x = cursor_visual_x * FONT_CHAR_WIDTH * 2  + offset_x - scroll_x;
 		int max_x = min_x + cursor_w;
-		int min_y = cursor_y * FONT_CHAR_HEIGHT * 2 + offset_y - scroll_y;
+		int min_y = cursor_visual_y * FONT_CHAR_HEIGHT * 2 + offset_y - scroll_y;
 		int max_y = min_y + cursor_h;
-			if (min_x < 0) min_x = 0;
+		if (min_x < 0) min_x = 0;
 		if (min_y < 0) min_y = 0;
 		if (max_x > draw_buffer->width) max_x = draw_buffer->width;
 		if (max_y > draw_buffer->height) max_y = draw_buffer->height;
@@ -417,7 +436,65 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		}
 		time += 1.0f / 60;
 	}
+    if (mouse_x >= offset_x && is_mouse_left_button_pressed)
+    {
+#if 1
+        //TODO: we need ceil here because scrool might not be a multiple of CHAR_HEIGHT, think about
+        //this more later
+        int mouse_cursor_y = (mouse_y) / (FONT_CHAR_HEIGHT * 2) + ceilf(scroll_y / (FONT_CHAR_HEIGHT * 2));
+        int mouse_cursor_x = (mouse_x) / (FONT_CHAR_WIDTH * 2) - 3 + ceilf(scroll_x / (FONT_CHAR_WIDTH * 2));
+        cursor_x = mouse_cursor_x;
+        cursor_y = mouse_cursor_y;
+        if (cursor_y >= line_count)
+            cursor_y = line_count - 1;
 
+
+        int c = 0;
+        for (int i = 0; lines[cursor_y][i] && c < mouse_cursor_x; i++)
+        {
+            if (lines[cursor_y][i] == '\t')
+            {
+                if (c + 4 > mouse_cursor_x)
+                {
+                    //TODO: think more about how this works
+                    cursor_x -= mouse_cursor_x - c;
+                    break ;
+                }
+                c += 4;
+                cursor_x -= 3;
+            }
+            else
+                c++;
+        }// "       "
+        printf("%d %d %d\n", mouse_cursor_x, cursor_x, cursor_y);
+        if (cursor_x >= (int)strlen(lines[cursor_y]))
+            cursor_x = strlen(lines[cursor_y]);
+#endif
+#if 0
+       {
+            static float time = 0;
+            uint32_t r = 0, g = 0, b = 255;
+            uint32_t c = (r << 24) | (g << 16) | (b << 8);
+            int min_x = mouse_cursor_x * FONT_CHAR_WIDTH * 2  + offset_x - scroll_x;
+            int max_x = min_x + cursor_w;
+            int min_y = mouse_cursor_y * FONT_CHAR_HEIGHT * 2 + offset_y - scroll_y;
+            int max_y = min_y + cursor_h;
+                if (min_x < 0) min_x = 0;
+            if (min_y < 0) min_y = 0;
+            if (max_x > draw_buffer->width) max_x = draw_buffer->width;
+            if (max_y > draw_buffer->height) max_y = draw_buffer->height;
+            for (int y = min_y; y < max_y; y++)
+            {
+                for (int x = min_x; x < max_x; x++)
+                {
+
+				draw_buffer->pixels[y * draw_buffer->width + x] = c;
+			    }
+		    }
+		    time += 1.0f / 60;
+	    }
+#endif
+    }   
 	for (int y = 0; y < draw_buffer->height; y++)
 	{
 		for (int x = 0; x < offset_x; x++)
@@ -434,6 +511,15 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 				((uint32_t)(b * 255 + 0.5f) << 8);
 		}
 	}
+#if 0 
+    for (int y = mouse_y; y < mouse_y + 5; y++)
+    {
+        for (int x = mouse_x; x < mouse_x + 5; x++)
+        {
+            draw_buffer->pixels[y * draw_buffer->width + x] = 0xffff0000;
+        }
+    }
+#endif
 
 }
 
@@ -471,6 +557,7 @@ int main(void)
 		char *input_text = 0;
         SDL_Event ev;
 		memset(is_pressed, 0, sizeof(is_pressed));
+        mouse_scroll_y = 0;
         while (SDL_PollEvent(&ev))
         {
             if (ev.type == SDL_QUIT)
@@ -491,11 +578,24 @@ int main(void)
 
 			    if (code == SDLK_ESCAPE)
 					return 0;
+                //TODO: change this into GetKeyboardState?
 				is_pressed[ev.key.keysym.scancode] = is_down;
 
 			}
+            else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP)
+            {
+                if (ev.button.button == SDL_BUTTON_LEFT)
+                    is_mouse_left_button_pressed = (ev.type == SDL_MOUSEBUTTONDOWN);
+            }
+            else if (ev.type == SDL_MOUSEWHEEL)
+            {
+                static int last = 0;
+                mouse_scroll_y = ev.wheel.y;
+            }
 
         }
+        printf("%d\n", mouse_scroll_y);
+        SDL_GetMouseState(&mouse_x, &mouse_y);
 		update_and_render_the_editor(&back_buffer, input_text);
 		free(input_text);
         SDL_RenderClear(renderer);
