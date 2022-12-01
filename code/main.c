@@ -10,6 +10,11 @@ typedef struct {
 	uint32_t *pixels;
 } image_t;
 
+float lerp(float a, float t, float b)
+{
+	return a + t * (b - a);
+}
+
 image_t load_image(char *filename)
 {
     int w, h, n;
@@ -104,6 +109,15 @@ void draw_text(image_t *draw_buffer, char *s, int min_x, int min_y, float scale)
 	for (int i = 0; s[i]; i++)
 	{
 		if (s[i] == '\n') continue;
+		if (s[i] == '\t')
+		{ // todo: we got a problem with tab (we need like a visual cursor vs actual cursor)
+			for (int j = 0; j < 1; j++)
+			{
+				draw_char(draw_buffer, ' ', x, y, scale);
+				x += FONT_CHAR_WIDTH * scale;
+			}
+			continue;
+		}
 		draw_char(draw_buffer, s[i], x, y, scale);
 		x += FONT_CHAR_WIDTH * scale;
 	}
@@ -115,69 +129,112 @@ int cursor_x = 0;
 int cursor_y = 0;
 int cursor_w = 4;
 int cursor_h = FONT_CHAR_HEIGHT * 2;
-
-void draw_cursor(image_t *draw_buffer)
-{
-	static float time = 0;
-	float alpha = (sin(time) + 1) * 0.5f;
-	uint32_t r = 255, g = 0, b = 0;
-	alpha = 1;
-	r *= alpha, g *= alpha, b *= alpha;
-	uint32_t c = (r << 24) | (g << 16) | (b << 8);
-	int min_x = cursor_x * FONT_CHAR_WIDTH * 2 + 50;
-	int max_x = min_x + cursor_w;
-	int min_y = cursor_y * FONT_CHAR_HEIGHT * 2+ 50;
-	int max_y = min_y + cursor_h;
-	for (int y = min_y; y < max_y; y++)
-	{
-		for (int x = min_x; x < max_x; x++)
-		{
-
-			draw_buffer->pixels[y * draw_buffer->width + x] = c;
-		}
-	}
-	time += 1.0f / 60;
-}
-
-
+static int is_pressed[512];
+int offset_x = 0;
+int offset_y = 0;
 static char *lines[1024];
 int line_count = 1;
 
-void update_and_render_the_editor(image_t *draw_buffer, char *input_text, int enter, int backspace)
-{//todo: we lose the order of input, enter, backspace
+//todo: weird behavior when I input the key on the left of 1
+void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
+{
 	if (!font.width)
 	{
 		font = load_image("font.png");
 		lines[0] = calloc(1, 1);
+		line_count = 1;
 	}
 	//clear the screen
 	for (int y = 0; y < draw_buffer->height; y++)
 	{
 		for (int x = 0; x < draw_buffer->width; x++)
-			draw_buffer->pixels[y * draw_buffer->width + x] = 0x55555500;
+			draw_buffer->pixels[y * draw_buffer->width + x] = 0;
 	}
 
-	if (enter)
+	if (is_pressed[SDL_SCANCODE_RETURN])
 	{
-		cursor_x = 0;
-		cursor_y++;
-		if (!lines[cursor_y])
+
+		char *newline = strdup(lines[cursor_y] + cursor_x);
+
+		printf("newline: %s, old_line: %s\n", newline, lines[cursor_y]);
+		//todo: this is just a realloc
+		char *oldline = malloc(cursor_x + 1);
+		oldline[cursor_x] = 0;
+		memcpy(oldline, lines[cursor_y], cursor_x);
+		free(lines[cursor_y]);
+		lines[cursor_y] = oldline;
+
+	//	lines[cursor_y] = realloc(lines[cursor_y], cursor_x + 1);
+		printf("newline: %s, old_line: %s\n", newline, lines[cursor_y]);
+
+		for (int i = line_count; i > cursor_y + 1; i--)
 		{
-			line_count++;
-			lines[cursor_y] = calloc(1, 1);
+			lines[i] = lines[i - 1];
 		}
+		cursor_y++;
+		lines[cursor_y] = newline;
+		cursor_x = 0;
+		line_count++;
+
 	}
-	if (backspace)
+	if (is_pressed[SDL_SCANCODE_BACKSPACE])
 	{
 		if (cursor_x)
 		{
 			memmove(lines[cursor_y] + cursor_x - 1, lines[cursor_y] + cursor_x, strlen(lines[cursor_y]) - cursor_x + 1);
-
 			cursor_x--;
+		}
+		else if (cursor_y)
+		{
+			cursor_x = strlen(lines[cursor_y - 1]);
+			lines[cursor_y - 1] = realloc(lines[cursor_y - 1], strlen(lines[cursor_y - 1]) + strlen(lines[cursor_y]) + 1);
+			memcpy(lines[cursor_y - 1] + strlen(lines[cursor_y - 1]), lines[cursor_y], strlen(lines[cursor_y]) + 1);
+			for (int y = cursor_y; y < line_count - 1; y++)
+			{
+				lines[y] = lines[y + 1];
+			}
+			line_count--;
+			cursor_y--;
 
 		}
 	}
+	if (is_pressed[SDL_SCANCODE_LEFT])
+	{
+		if (cursor_x)
+			cursor_x--;
+	}
+	if (is_pressed[SDL_SCANCODE_RIGHT])
+	{
+		if (cursor_x < (int)strlen(lines[cursor_y]))
+			cursor_x++;
+	}
+	if (is_pressed[SDL_SCANCODE_UP])
+	{
+		if (cursor_y)
+			cursor_y--;
+		if (cursor_x > (int)strlen(lines[cursor_y]))
+			cursor_x = strlen(lines[cursor_y]);
+	}
+	if (is_pressed[SDL_SCANCODE_DOWN])
+	{
+		if (cursor_y < line_count - 1)
+			cursor_y++;
+		if (cursor_x > (int)strlen(lines[cursor_y]))
+			cursor_x = strlen(lines[cursor_y]);
+	}
 
+	if (is_pressed[SDL_SCANCODE_TAB])
+	{
+		if (!input_text)
+			input_text = "\t";
+		else
+		{
+			int input_len = strlen(input_text);
+			char *new_text = calloc(1, input_len + 2);
+			memcpy(new_text, input_text, input_len);
+			new_text[input_len] = '\t';
+		}
+	}
 	// }
 	if (input_text)
 	{
@@ -194,29 +251,89 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text, int en
 		{
 			lines[cursor_y][i] = text[i - cursor_x];
 		}
-		lines[cursor_y][curr_line_len + text_len] = 0;
 		cursor_x += text_len;
+		lines[cursor_y][curr_line_len + text_len] = 0;
 	}
 
-
+	printf("%d\n", line_count);
 
 	//draw_char(draw_buffer, 'z', 0, 0, 4);
 	//draw_text(draw_buffer, "Hello World, I can draw Into the screen! cool right?\nHell yeah\nEven new lines lol", 100, 300, 3);
 	//draw_text(draw_buffer, "Hello World, I can draw Into the screen! cool right?\nHell yeah\nEven new lines lol", 100, 300, 3);
-	int y = 50;
+	offset_x = 2 * 2 * FONT_CHAR_WIDTH + 10;
+
+
+	int y = offset_y;
+	static float scroll_y = 0;
+	//wait how does this work again? and why here I need + 1 but I don't need it later?
+	if ((cursor_y + 1) * FONT_CHAR_HEIGHT * 2 >= draw_buffer->height)
+	{
+		float new_scroll = (cursor_y + 1) * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
+		if (new_scroll > scroll_y)
+			scroll_y = new_scroll;
+	}
+	if ((cursor_y) * FONT_CHAR_HEIGHT * 2 < scroll_y)
+	{
+		scroll_y =	(cursor_y) * FONT_CHAR_HEIGHT * 2;
+	}
 	for (int i = 0; i < line_count; i++)
 	{
-		draw_text(draw_buffer, lines[i], 50, y, 2);
+		char s[3] = {};
+		s[0] = s[1] = s[2] = 0;
+		if (i < 10)
+		{
+			s[0] = i + '0';
+		}
+		else
+		{
+			s[0] = i / 10 + '0';
+			s[1] = i % 10 + '0';
+		}
+		draw_text(draw_buffer, s, 0, y - scroll_y, 2);
+		draw_text(draw_buffer, lines[i], offset_x, y - scroll_y, 2);
 		y += 2 * FONT_CHAR_HEIGHT;
 	}
-	draw_cursor(draw_buffer);
-	// for (int y = 0; y < font.height; y++)
-	// {
-	// 	for (int x = 0; x < font.width; x++)
-	// 	{
-	// 		draw_buffer->pixels[y * draw_buffer->width + x] = font.pixels[y * font.width + x];
-	// 	}
-	// }
+	{
+			static float time = 0;
+		float alpha = (sin(time) + 1) * 0.5f;
+		uint32_t r = 0, g = 0, b = 255;
+		alpha = 1;
+		r *= alpha, g *= alpha, b *= alpha;
+		uint32_t c = (r << 24) | (g << 16) | (b << 8);
+		int min_x = cursor_x * FONT_CHAR_WIDTH * 2  + offset_x;
+		int max_x = min_x + cursor_w;
+		int min_y = cursor_y * FONT_CHAR_HEIGHT * 2 + offset_y - scroll_y;
+		int max_y = min_y + cursor_h;
+			if (min_x < 0) min_x = 0;
+		if (min_y < 0) min_y = 0;
+		if (max_x > draw_buffer->width) max_x = draw_buffer->width;
+		if (max_y > draw_buffer->height) max_y = draw_buffer->height;
+		for (int y = min_y; y < max_y; y++)
+		{
+			for (int x = min_x; x < max_x; x++)
+			{
+
+				draw_buffer->pixels[y * draw_buffer->width + x] = c;
+			}
+		}
+		time += 1.0f / 60;
+	}
+	for (int y = 0; y < draw_buffer->height; y++)
+	{
+		for (int x = 0; x < offset_x; x++)
+		{
+			uint32_t p = draw_buffer->pixels[y * draw_buffer->width + x];
+			float r = ((p >> 24) & 0xFF) / 255.0f;
+			float g = ((p >> 16) & 0xFF) / 255.0f;
+			float b = ((p >> 8) & 0xFF) / 255.0f;
+			r = lerp(r, 0.7, 0.5f);
+			g = lerp(g, 0.7, 0.5f);
+			b = lerp(b, 0.7, 0.5f);
+			draw_buffer->pixels[y * draw_buffer->width + x] = ((uint32_t)(r * 255 + 0.5f) << 24) |
+				((uint32_t)(g * 255 + 0.5f) << 16) |
+				((uint32_t)(b * 255 + 0.5f) << 8);
+		}
+	}
 
 }
 
@@ -253,6 +370,7 @@ int main(void)
 		int enter = 0, backspace = 0;
 		char *input_text = 0;
         SDL_Event ev;
+		memset(is_pressed, 0, sizeof(is_pressed));
         while (SDL_PollEvent(&ev))
         {
             if (ev.type == SDL_QUIT)
@@ -270,41 +388,15 @@ int main(void)
 				int is_down = (ev.type == SDL_KEYDOWN);
 
 				SDL_Keycode code = ev.key.keysym.sym;
+
 			    if (code == SDLK_ESCAPE)
 					return 0;
-				if (is_down)
-				{
-					if (code == SDLK_LEFT)
-					{
-						if (cursor_x)
-							cursor_x--;
-					}
-					if (code == SDLK_RIGHT)
-					{
-						cursor_x++;
-					}
-					if (code == SDLK_UP)
-					{
-						cursor_y--;
-					}
-					if (code == SDLK_DOWN)
-					{
-						cursor_y++;
-					}
-					if (code == SDLK_RETURN)
-					{
-						enter = 1;
+				is_pressed[ev.key.keysym.scancode] = is_down;
 
-					}
-					if (code == SDLK_BACKSPACE)
-					{
-						backspace = 1;
-					}
-				}
 			}
 
         }
-		update_and_render_the_editor(&back_buffer, input_text, enter, backspace);
+		update_and_render_the_editor(&back_buffer, input_text);
 		free(input_text);
         SDL_RenderClear(renderer);
         SDL_UpdateTexture(screen_texture, NULL, back_buffer.pixels, window_width * 4);
