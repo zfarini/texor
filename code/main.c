@@ -3,6 +3,7 @@
 #define STBI_ONLY_PNG
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#include <stdio.h>
 
 typedef struct {
 	int width;
@@ -48,6 +49,37 @@ image_t load_image(char *filename)
     return img;
 }
 
+char *load_entire_file(char *filename)
+{
+    FILE *f = fopen(filename, "r");
+    if (!f)
+    {
+        printf("failed to load file: %s\n", filename);
+        assert(f);
+        return 0;
+    }
+    fseek(f, 0, SEEK_END);
+    long length = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *result = malloc(length + 1);
+    assert(result);
+    fread(result, 1, length, f);
+    result[length] = 0;
+    fclose(f);
+    //TODO: what should we do about '\r'?
+    for (int i = 0; i < length;)
+    {
+        if (result[i] == '\r')
+        {
+            memmove(result + i, result + i + 1, length - i);
+            length--;
+        }
+        else
+            i++;
+    }
+    return result;
+}
+
 static image_t font;
 
 #define FONT_WIDTH 128
@@ -66,10 +98,16 @@ void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
 	if (min_y < 0) min_y = 0;
 	if (max_x > draw_buffer->width) max_x = draw_buffer->width;
 	if (max_y > draw_buffer->height) max_y = draw_buffer->height;
+    
 	for (int y = min_y; y < max_y; y++)
 	{
 		for (int x = min_x; x < max_x; x++)
 		{
+            if (c > '~' || c < 32)
+            {
+                draw_buffer->pixels[y * draw_buffer->width + x] = 0xff00ff00;
+                continue;
+            }
 			float tx = (float)(x - min_x) / (max_x - min_x);
 			float ty = (float)(y - min_y) / (max_y - min_y);
 			//printf("%d %d %d %d %f %f\n", min_x, min_y, max_x, max_y, tx, ty);
@@ -110,8 +148,8 @@ void draw_text(image_t *draw_buffer, char *s, int min_x, int min_y, float scale)
 	{
 		if (s[i] == '\n') continue;
 		if (s[i] == '\t')
-		{ // todo: we got a problem with tab (we need like a visual cursor vs actual cursor)
-			for (int j = 0; j < 1; j++)
+		{
+			for (int j = 0; j < 4; j++)
 			{
 				draw_char(draw_buffer, ' ', x, y, scale);
 				x += FONT_CHAR_WIDTH * scale;
@@ -133,7 +171,7 @@ static int is_pressed[512];
 int offset_x = 0;
 int offset_y = 0;
 static char *lines[1024];
-int line_count = 1;
+static int line_count;
 
 //todo: weird behavior when I input the key on the left of 1
 void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
@@ -142,7 +180,29 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	{
 		font = load_image("font.png");
 		lines[0] = calloc(1, 1);
-		line_count = 1;
+        char *file = load_entire_file("code/main.c");
+        for (int i = 0; file[i];)
+        {
+            while (file[i] == '\n')
+            {
+                lines[line_count++] = calloc(1, 1);
+                i++;
+            }
+            if (!file[i])
+                break ;
+            int j = i;
+            for (; file[j] && file[j] != '\n'; j++)
+                ;
+            lines[line_count] = malloc(j - i + 1);
+            assert(lines[line_count]);
+            memcpy(lines[line_count], file + i, j - i);// "ab\n"
+            lines[line_count][j - i] = 0;
+            line_count++;
+            if (!file[j])
+                break ;
+            i = j + 1;
+        }
+
 	}
 	//clear the screen
 	for (int y = 0; y < draw_buffer->height; y++)
@@ -156,7 +216,6 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 
 		char *newline = strdup(lines[cursor_y] + cursor_x);
 
-		printf("newline: %s, old_line: %s\n", newline, lines[cursor_y]);
 		//todo: this is just a realloc
 		char *oldline = malloc(cursor_x + 1);
 		oldline[cursor_x] = 0;
@@ -165,7 +224,6 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		lines[cursor_y] = oldline;
 
 	//	lines[cursor_y] = realloc(lines[cursor_y], cursor_x + 1);
-		printf("newline: %s, old_line: %s\n", newline, lines[cursor_y]);
 
 		for (int i = line_count; i > cursor_y + 1; i--)
 		{
@@ -238,13 +296,11 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	// }
 	if (input_text)
 	{
-		printf("HELLO\n");
 		char *text = input_text;
 		int text_len = strlen(text);
 		int curr_line_len = strlen(lines[cursor_y]);
 		assert(cursor_x <= curr_line_len && cursor_x >= 0);
 
-		printf("%p %d\n", lines[cursor_y], text_len);
 		lines[cursor_y] = realloc(lines[cursor_y], text_len + curr_line_len + 1);
 		memmove(lines[cursor_y] + cursor_x + text_len, lines[cursor_y] + cursor_x, curr_line_len - cursor_x);
 		for (int i = cursor_x; i < cursor_x + text_len; i++)
@@ -260,12 +316,32 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	//draw_char(draw_buffer, 'z', 0, 0, 4);
 	//draw_text(draw_buffer, "Hello World, I can draw Into the screen! cool right?\nHell yeah\nEven new lines lol", 100, 300, 3);
 	//draw_text(draw_buffer, "Hello World, I can draw Into the screen! cool right?\nHell yeah\nEven new lines lol", 100, 300, 3);
-	offset_x = 2 * 2 * FONT_CHAR_WIDTH + 10;
+	offset_x = 3 * 2 * FONT_CHAR_WIDTH + 10;
 
 
+    //a
+    //b -
+    //c
+    //d
 	int y = offset_y;
 	static float scroll_y = 0;
-	//wait how does this work again? and why here I need + 1 but I don't need it later?
+    static float scroll_x = 0;
+    int cursor_visual_x = cursor_x;
+    for (int i = 0; lines[cursor_y][i]; i++)
+    {
+        if (lines[cursor_y][i] == '\t')
+            cursor_visual_x += 3;
+    }
+	if ((cursor_visual_x + 1) * FONT_CHAR_WIDTH * 2 + offset_x >= draw_buffer->width)
+	{
+		float new_scroll = (cursor_visual_x + 1) * FONT_CHAR_WIDTH * 2 + offset_x - draw_buffer->width;
+		if (new_scroll > scroll_x)
+			scroll_x = new_scroll;
+	}
+	if ((cursor_visual_x) * FONT_CHAR_WIDTH * 2 < scroll_x)
+	{
+		scroll_x =	(cursor_visual_x) * FONT_CHAR_WIDTH * 2;
+	}
 	if ((cursor_y + 1) * FONT_CHAR_HEIGHT * 2 >= draw_buffer->height)
 	{
 		float new_scroll = (cursor_y + 1) * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
@@ -276,31 +352,54 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	{
 		scroll_y =	(cursor_y) * FONT_CHAR_HEIGHT * 2;
 	}
+    
 	for (int i = 0; i < line_count; i++)
 	{
-		char s[3] = {};
-		s[0] = s[1] = s[2] = 0;
-		if (i < 10)
-		{
-			s[0] = i + '0';
-		}
-		else
-		{
-			s[0] = i / 10 + '0';
-			s[1] = i % 10 + '0';
-		}
+        char *s;
+        {
+            int x = i;
+            int len = (i == 0);
+            while (x)
+            {
+                len++;
+                x /= 10;
+            }
+
+            s = malloc(10);
+            s[len] = 0;
+            x = i;
+            if (!x)
+                s[0] = '0';
+            int j = len - 1;
+            while (x)
+            {
+                s[j--] = x % 10 + '0';
+                x /= 10;
+            }
+        }
+		draw_text(draw_buffer, lines[i], offset_x - scroll_x, y - scroll_y, 2);
+#if 1
+        for (int cy = y; cy < y + 2 * FONT_CHAR_HEIGHT && cy <draw_buffer->height; cy++)
+        {
+            for (int cx = 0; cx < offset_x && cx < draw_buffer->width; cx++)
+            {
+                draw_buffer->pixels[cy * draw_buffer->width + cx] = 0;
+            }
+        }
+
 		draw_text(draw_buffer, s, 0, y - scroll_y, 2);
-		draw_text(draw_buffer, lines[i], offset_x, y - scroll_y, 2);
+#endif
+        free(s);
 		y += 2 * FONT_CHAR_HEIGHT;
 	}
 	{
-			static float time = 0;
-		float alpha = (sin(time) + 1) * 0.5f;
-		uint32_t r = 0, g = 0, b = 255;
-		alpha = 1;
+		static float time = 0;
+		float alpha = (sin(time * 5) + 1) * 0.5f;
+		uint32_t r = 255, g = 0, b = 0;
+        alpha = 1;
 		r *= alpha, g *= alpha, b *= alpha;
 		uint32_t c = (r << 24) | (g << 16) | (b << 8);
-		int min_x = cursor_x * FONT_CHAR_WIDTH * 2  + offset_x;
+		int min_x = cursor_visual_x * FONT_CHAR_WIDTH * 2  + offset_x - scroll_x;
 		int max_x = min_x + cursor_w;
 		int min_y = cursor_y * FONT_CHAR_HEIGHT * 2 + offset_y - scroll_y;
 		int max_y = min_y + cursor_h;
@@ -318,6 +417,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		}
 		time += 1.0f / 60;
 	}
+
 	for (int y = 0; y < draw_buffer->height; y++)
 	{
 		for (int x = 0; x < offset_x; x++)
@@ -341,7 +441,7 @@ int main(void)
 {
     image_t back_buffer = {
         .width = 960,
-        .height = 540,
+        .height = 1280,
     };
     int window_width = back_buffer.width;
     int window_height = back_buffer.height;
