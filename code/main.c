@@ -100,7 +100,11 @@ void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
 {
 	int max_x = min_x + scale * FONT_CHAR_WIDTH;
 	int max_y = min_y + scale * FONT_CHAR_HEIGHT;
-
+    
+    float start_x = min_x;
+    float start_y = min_y;
+    float xdiv = 1.0f / (max_x - min_x);
+    float ydiv = 1.0f / (max_y - min_y);
 	if (min_x < 0) min_x = 0;
 	if (min_y < 0) min_y = 0;
 	if (max_x > draw_buffer->width) max_x = draw_buffer->width;
@@ -115,8 +119,8 @@ void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
                 draw_buffer->pixels[y * draw_buffer->width + x] = 0xff00ff00;
                 continue;
             }
-			float tx = (float)(x - min_x) / (max_x - min_x);
-			float ty = (float)(y - min_y) / (max_y - min_y);
+			float tx = (float)(x - start_x) * xdiv;
+			float ty = (float)(y - start_y) * ydiv; 
 			//printf("%d %d %d %d %f %f\n", min_x, min_y, max_x, max_y, tx, ty);
 			int fx = tx * FONT_CHAR_WIDTH + ((c - 32) % FONT_COLS) * FONT_CHAR_WIDTH;
 			int fy = ty * FONT_CHAR_HEIGHT + ((c - 32) / FONT_COLS) * FONT_CHAR_HEIGHT;
@@ -170,15 +174,13 @@ void draw_text(image_t *draw_buffer, char *s, int min_x, int min_y, float scale)
 	}
 }
 
-char buffer[4096];
-int buffer_length = 0;
 int cursor_x = 0;
 int cursor_y = 0;
 int cursor_w = 4;
 int cursor_h = FONT_CHAR_HEIGHT * 2;
 static int is_pressed[512];
 
-static char *lines[1024];
+static char *lines[4096];
 static int line_count;
 static int mouse_prev_x, mouse_prev_y;
 static int mouse_x, mouse_y;
@@ -187,7 +189,7 @@ int clip_x0;
 int clip_y1;
 int clip_x1;
 int clip = 0;
-int mouse_scroll_y = 0;
+float mouse_scroll_y = 0;
 char *clip_board = 0;
 
 int is_mouse_left_button_pressed = 0;
@@ -199,7 +201,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	{
 		font = load_image("font.png");
 		lines[0] = calloc(1, 1);
-        char *file = load_entire_file("test");
+        char *file = load_entire_file("code/main.c");
         for (int i = 0; file[i];)
         {
             while (file[i] == '\n')
@@ -221,6 +223,8 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
                 break ;
             i = j + 1;
         }
+        if (file[0] == '\0')
+            line_count = 1;
 
 	}
     //TODO next: mouse support? undo/redo,
@@ -255,7 +259,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		line_count++;
 
 	}
-	if (is_pressed[SDL_SCANCODE_BACKSPACE])
+	if (is_pressed[SDL_SCANCODE_BACKSPACE] && !clip)
 	{
 		if (cursor_x)
 		{
@@ -313,7 +317,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 			new_text[input_len] = '\t';
 		}
 	}
-	// }
+
 	if (input_text)
 	{
 		char *text = input_text;
@@ -336,25 +340,9 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	//draw_text(draw_buffer, "Hello World, I can draw Into the screen! cool right?\nHell yeah\nEven new lines lol", 100, 300, 3);
     static int offset_x = 0;
     static int offset_y = 0;
-	offset_x = 3 * 2 * FONT_CHAR_WIDTH + 10;//todo: the 3 is hardcoded in the mouse_cursor_x 
+	offset_x = 4 * 2 * FONT_CHAR_WIDTH + 10;//todo: the 3 is hardcoded in the mouse_cursor_x 
 
     //move cursor to mouse positino
-
-    //a
-    //b -
-    //c
-    //d
-	int y = offset_y;
-	static float scroll_y = 0;
-    static float scroll_x = 0;
-
-    scroll_y += mouse_scroll_y * 10;
-    if (scroll_y < 0)
-        scroll_y = 0;
-        //NOTE: this breaks when the file has a low number of lines
-//    if (scroll_y + draw_buffer->height > line_count * FONT_CHAR_HEIGHT * 2)
-  //      scroll_y = line_count * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
-    
     int cursor_visual_x = cursor_x;
     int cursor_visual_y = cursor_y;
     for (int i = 0; lines[cursor_y][i] && i < cursor_x; i++)
@@ -362,6 +350,45 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         if (lines[cursor_y][i] == '\t')
             cursor_visual_x += 3;
     }
+    //a
+    //b -
+    //c
+    //d
+	int y = offset_y;
+	static float scroll_y = 0;
+    static float scroll_x = 0;
+    static float scroll_dy = 0;
+    
+    float dt = 1.0f / 60;
+
+    float ddy = mouse_scroll_y * 10000 - scroll_dy * 4;
+    scroll_y += ddy * 0.5f * dt * dt + dt * scroll_dy;
+    scroll_dy += ddy * dt;
+    //a * 0.5f * t * t + v0 * t
+    //a * t + v0
+    //a
+    //TODO: make these work smooth like the mouse
+    if ((is_pressed[SDL_SCANCODE_DOWN]
+                && (cursor_visual_y + 1) * FONT_CHAR_HEIGHT * 2  >= scroll_y + draw_buffer->height)
+        || (is_pressed[SDL_SCANCODE_RETURN] && (cursor_visual_y + 1) * FONT_CHAR_HEIGHT * 2 >= scroll_y + draw_buffer->height))
+	{
+        scroll_y = (cursor_visual_y + 1) * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
+	}
+    if (is_pressed[SDL_SCANCODE_UP] && (cursor_visual_y) * FONT_CHAR_HEIGHT * 2 < scroll_y)
+    {
+        scroll_y = cursor_visual_y * FONT_CHAR_HEIGHT * 2;
+    }
+
+
+    if (scroll_y < 0)
+        scroll_y = 0, scroll_dy = 0;
+        //NOTE: this breaks when the file has a low number of lines
+    if (line_count * FONT_CHAR_HEIGHT * 2 <= draw_buffer->height)
+        scroll_y = 0, scroll_dy = 0;
+    else if (scroll_y + draw_buffer->height > line_count * FONT_CHAR_HEIGHT * 2)
+        scroll_y = line_count * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
+    
+
     //
 #if 0
 	if ((cursor_visual_x + 1) * FONT_CHAR_WIDTH * 2 + offset_x >= draw_buffer->width)
@@ -376,16 +403,9 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	}
 #endif 
     //TODO: enter now doesn't work, maybe instead we check if the cursor change from last frame?  
-	if (is_pressed[SDL_SCANCODE_DOWN] && (cursor_visual_y + 1) * FONT_CHAR_HEIGHT * 2  >= scroll_y + draw_buffer->height)
-	{
-        scroll_y = (cursor_visual_y + 1) * FONT_CHAR_HEIGHT * 2 - draw_buffer->height;
-	}
-    if (is_pressed[SDL_SCANCODE_UP] && (cursor_visual_y) * FONT_CHAR_HEIGHT * 2 < scroll_y)
-    {
-		scroll_y =	(cursor_visual_y) * FONT_CHAR_HEIGHT * 2;
-    }
 
 
+    //draw the text
 	for (int i = 0; i < line_count; i++)
 	{
         char *s;
@@ -426,6 +446,8 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         free(s);
 		y += 2 * FONT_CHAR_HEIGHT;
 	}
+    //draw the cursor
+#if 1
 	{
 		static float time = 0;
 		float alpha = (sin(time * 5) + 1) * 0.5f;
@@ -451,13 +473,15 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		}
 		time += 1.0f / 60;
 	}
+#endif
+    //update cursor by mouse position
     if (mouse_x >= offset_x && is_mouse_left_button_pressed)
     {
 #if 1
         //TODO: we need ceil here because scrool might not be a multiple of CHAR_HEIGHT, think about
         //this more later
-        int mouse_cursor_y = (mouse_y) / (FONT_CHAR_HEIGHT * 2) + ceilf(scroll_y / (FONT_CHAR_HEIGHT * 2));
-        int mouse_cursor_x = (mouse_x) / (FONT_CHAR_WIDTH * 2) - 3 + ceilf(scroll_x / (FONT_CHAR_WIDTH * 2));
+        int mouse_cursor_y = (mouse_y + scroll_y) / (FONT_CHAR_HEIGHT * 2);
+        int mouse_cursor_x = (mouse_x + scroll_x) / (FONT_CHAR_WIDTH * 2) - 4;
         cursor_x = mouse_cursor_x;
         cursor_y = mouse_cursor_y;
         if (cursor_y >= line_count)
@@ -482,7 +506,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
             }
             else
                 c++;
-        }// "       "
+        }
         if (cursor_x >= (int)strlen(lines[cursor_y]))
             cursor_x = strlen(lines[cursor_y]);
 #endif
@@ -510,7 +534,8 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 		    time += 1.0f / 60;
 	    }
 #endif
-    }   
+    }
+    // draw overlay for line numbers
 	for (int y = 0; y < draw_buffer->height; y++)
 	{
 		for (int x = 0; x < offset_x; x++)
@@ -539,68 +564,182 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
     static int new_clip = 0;
     if (is_mouse_left_button_pressed && (mouse_x != mouse_prev_x || mouse_y != mouse_prev_y))
     {
-        int mouse_prev_cursor_y = (mouse_prev_y) / (FONT_CHAR_HEIGHT * 2) + ceilf(scroll_y / (FONT_CHAR_HEIGHT * 2));
-        int mouse_prev_cursor_x = (mouse_prev_x) / (FONT_CHAR_WIDTH * 2) - 3 + ceilf(scroll_x / (FONT_CHAR_WIDTH * 2));
-        int mouse_cursor_y = (mouse_y) / (FONT_CHAR_HEIGHT * 2) + ceilf(scroll_y / (FONT_CHAR_HEIGHT * 2));
-        int mouse_cursor_x = (mouse_x) / (FONT_CHAR_WIDTH * 2) - 3 + ceilf(scroll_x / (FONT_CHAR_WIDTH * 2));
+        int mouse_prev_cursor_y = (mouse_prev_y + scroll_y) / (FONT_CHAR_HEIGHT * 2);
+        int mouse_prev_cursor_x = (mouse_prev_x + scroll_x) / (FONT_CHAR_WIDTH * 2) - 4;
+        int mouse_cursor_y = (mouse_y + scroll_y) / (FONT_CHAR_HEIGHT * 2);
+        int mouse_cursor_x = (mouse_x + scroll_x) / (FONT_CHAR_WIDTH * 2) - 4;
         if (!clip || new_clip)
         {
             clip = 1;
             clip_x0 = mouse_prev_cursor_x; //+ scroll_x / (FONT_CHAR_WIDTH * 2);
             clip_y0 = mouse_prev_cursor_y; //+ scroll_y / (FONT_CHAR_HEIGHT * 2);
+            if (clip_y0 >= line_count)
+                clip_y0 = line_count - 1;
+            if (clip_y0 < 0)
+                clip_y0 = 0;
+
+            int c = 0;
+            for (int i = 0; lines[clip_y0][i] && c < mouse_prev_cursor_x; i++)
+            {
+                if (lines[clip_y0][i] == '\t')
+                {
+                    if (c + 4 > mouse_prev_cursor_x)
+                    {
+                        //TODO: think more about how this works
+                        clip_x0 -= mouse_prev_cursor_x - c;
+                        break ;
+                    }
+                    c += 4;
+                    clip_x0 -= 3;
+                }
+                else
+                    c++;
+            }
             new_clip = 0;
         }
         //TODO: make clip_x0, clip_x1 be maximum on the end of line
         //TODO: wtf these variables exactly means
         clip_x1 = mouse_cursor_x;// + scroll_x / (FONT_CHAR_WIDTH * 2);
         clip_y1 = mouse_cursor_y;// + scroll_y / (FONT_CHAR_HEIGHT * 2);
-        if (clip_y0 >= line_count)
-            clip_y0 = line_count - 1;
-        if (clip_y0 < 0)
-            clip_y0 = 0;
         if (clip_y1 >= line_count)
             clip_y1 = line_count - 1;
         if (clip_y1 < 0)
             clip_y1 = 0;
-        if (clip_x0 >= (int)strlen(lines[clip_y0]))
-            clip_x0 = strlen(lines[clip_y0]) - 1;
+        int c = 0;
+        for (int i = 0; lines[clip_y1][i] && c < mouse_cursor_x; i++)
+        {
+            if (lines[clip_y1][i] == '\t')
+            {
+                if (c + 4 > mouse_cursor_x)
+                {
+                    //TODO: think more about how this works
+                    clip_x1 -= mouse_cursor_x - c;
+                    break ;
+                }
+                c += 4;
+                clip_x1 -= 3;
+            }
+            else
+                c++;
+        }
+#if 1
+
+        if (clip_x0 > (int)strlen(lines[clip_y0]))
+            clip_x0 = strlen(lines[clip_y0]);
         if (clip_x0 < 0)
             clip_x0 = 0;
-        if (clip_x1 >= (int)strlen(lines[clip_y1]))
-            clip_x1 = strlen(lines[clip_y1]) - 1;
+        if (clip_x1 > (int)strlen(lines[clip_y1]))
+            clip_x1 = strlen(lines[clip_y1]);
         if (clip_x1 < 0)
             clip_x1 = 0;
+#if 0
+        for (int i = 0; lines[clip_y0][i]; i++)
+        {
+            if (lines[clip_y0][i] == '\t')
+                clip_x0 += 3;
+        }
+        for (int i = 0; lines[clip_y1][i]; i++)
+        {
+            if (lines[clip_y1][i] == '\t')
+                clip_x1 += 3;
+        }
+#endif
+#endif
+
 
     }
-    if (is_control_key_pressed && is_pressed[SDL_SCANCODE_C])
+#if 0
+    printf("%d %d %d %d %d\n", clip_x0, clip_y0, clip_x1, clip_y1, strlen(lines[clip_y0]));
+    printf("\"%s\"\n", lines[clip_y0]);
+        {
+            static float time = 0;
+            float alpha = (sin(time * 5) + 1) * 0.5f;
+            uint32_t r = 255, g = 255, b = 0;
+            alpha = 1;
+            r *= alpha, g *= alpha, b *= alpha;
+            uint32_t c = (r << 24) | (g << 16) | (b << 8);
+            int min_x = clip_x0 * FONT_CHAR_WIDTH * 2 + offset_x - scroll_x;
+            int max_x = min_x + cursor_w;
+            int min_y = clip_y0 * FONT_CHAR_HEIGHT * 2 + offset_y - scroll_y;
+            int max_y = min_y + cursor_h;
+            if (min_x < 0) min_x = 0;
+            if (min_y < 0) min_y = 0;
+            if (max_x > draw_buffer->width) max_x = draw_buffer->width;
+            if (max_y > draw_buffer->height) max_y = draw_buffer->height;
+            for (int y = min_y; y < max_y; y++)
+            {
+                for (int x = min_x; x < max_x; x++)
+                {
+
+                    draw_buffer->pixels[y * draw_buffer->width + x] = c;
+                }
+            }
+            time += 1.0f / 60;
+        }
+        {
+            static float time = 0;
+            float alpha = (sin(time * 5) + 1) * 0.5f;
+            uint32_t r = 0, g = 0, b = 255;
+            alpha = 1;
+            r *= alpha, g *= alpha, b *= alpha;
+            uint32_t c = (r << 24) | (g << 16) | (b << 8);
+            int min_x = clip_x1 * FONT_CHAR_WIDTH * 2 + offset_x - scroll_x;
+            int max_x = min_x + cursor_w;
+            int min_y = clip_y1 * FONT_CHAR_HEIGHT * 2 + offset_y - scroll_y;
+            int max_y = min_y + cursor_h;
+            if (min_x < 0) min_x = 0;
+            if (min_y < 0) min_y = 0;
+            if (max_x > draw_buffer->width) max_x = draw_buffer->width;
+            if (max_y > draw_buffer->height) max_y = draw_buffer->height;
+            for (int y = min_y; y < max_y; y++)
+            {
+                for (int x = min_x; x < max_x; x++)
+                {
+
+                    draw_buffer->pixels[y * draw_buffer->width + x] = c;
+                }
+            }
+            time += 1.0f / 60;
+	    }
+
+#endif
+    if (is_control_key_pressed && is_pressed[SDL_SCANCODE_A])
+    {
+        clip = 1;
+        clip_x0 = 0, clip_y0 = 0, clip_y1 = line_count - 1, clip_x1 = strlen(lines[line_count - 1]);
+    }
+    int copy = (is_control_key_pressed && (is_pressed[SDL_SCANCODE_X] || is_pressed[SDL_SCANCODE_C]));
+    int cut = (is_control_key_pressed && is_pressed[SDL_SCANCODE_X]) || (is_pressed[SDL_SCANCODE_BACKSPACE]);
+    if (clip && (copy || cut))
     {
         //calc new clip_board
         free(clip_board);
         clip_board = calloc(1, 1);
         int clip_board_size = 1;
+        int x0 = clip_x0, y0 = clip_y0, x1 = clip_x1, y1 = clip_y1;
+        if (y0 > y1)
         {
-            int x0 = clip_x0, y0 = clip_y0, x1 = clip_x1, y1 = clip_y1;
-            if (y0 > y1)
-            {
-                swap(&y0, &y1);
-                swap(&x0, &x1);
-            }
-            if (y0 < 0)
-              y0 = 0;
-            if (y1 >= line_count)
-              y1 = line_count - 1;
+            swap(&y0, &y1);
+            swap(&x0, &x1);
+        }
+        if (y0 < 0)
+          y0 = 0;
+        if (y1 >= line_count)
+          y1 = line_count - 1;
+        if (copy)
+        {
             for (int y = y0; y <= y1; y++)
             {
                 int line_len = strlen(lines[y]);
                 int add_newline = (y < y1);
                 if (y0 == y1)
                 {
+
                     if (x0 > x1)
                         swap(&x0, &x1);
-                    clip_board = realloc(clip_board, x1 - x0 + 2);
-                    memcpy(clip_board, lines[y] + x0, x1 - x0 + 1);
-                    clip_board[clip_board_size + x1 - x0 + 1] = 0;
-                    clip_board_size += x1 - x0 + 1;
+                    clip_board = realloc(clip_board, x1 - x0 + 1);
+                    memcpy(clip_board, lines[y] + x0, x1 - x0);
+                    clip_board[x1 - x0] = 0;
                 }
                 else if (y == y0)
                 {// "abc|def"
@@ -621,40 +760,103 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
                     clip_board_size += line_len + add_newline;
                 }
             }
+            SDL_SetClipboardText(clip_board);
         }
-        printf ("ClipBoard: \"%s\"\n", clip_board);
+        if (cut)
+        {
+            //remove_selected_text...
+            int cy = y0;
+            for (int y = y0; y <= y1; y++)
+            {
+                int line_len = strlen(lines[cy]);
+                if (y0 == y1)
+                {
+                    if (x0 > x1)
+                        swap(&x0, &x1);
+                    char *newline = malloc(line_len - (x1 - x0) + 1);
+                    memcpy(newline, lines[cy], x0);
+                    memcpy(newline + x0, lines[cy] + x1, line_len - x1);
+                    newline[line_len - (x1 - x0)] = 0;
+                    free(lines[cy]);
+                    lines[cy] = newline;
+                    cy++;
+                }
+                else if (y == y0)
+                {
+                    //note: this just shrink it
+                    char *newline = malloc(x0 + 1);
+                    memcpy(newline, lines[cy], x0);
+                    newline[x0] = 0;
+                    free(lines[cy]);
+                    lines[cy] = newline;
+                    cy++;
+                }
+                else if (y == y1)
+                {
+                    //todo: append this to the first line ?
+                    assert(cy);
+                    int prev_line_len = strlen(lines[cy - 1]);
+                    char *newline = malloc(prev_line_len + line_len - x1 + 1); 
+                    memcpy(newline, lines[cy - 1], prev_line_len);
+                    memcpy(newline + prev_line_len, lines[cy] + x1, line_len - x1);
+                    newline[prev_line_len + line_len - x1] = 0;
+                    free(lines[cy - 1]);
+                    lines[cy - 1] = newline;
+                    memmove(lines + cy, lines + cy + 1, (line_count - cy - 1) * sizeof(char *));
+                    line_count--;
+                }
+                else
+                {
+                    //just remove this line
+                    memmove(lines + cy, lines + cy + 1, (line_count - cy - 1) * sizeof(char *));
+                    line_count--;
+                }
+            }
+            clip = 0;
+            printf("UNSETTING CLIP\n");
+            new_clip = 1;
+        }
+       // printf ("Clipboard: \"%s\"\n", clip_board);
     }
     if (is_control_key_pressed && is_pressed[SDL_SCANCODE_V] && clip_board)
     {
         int cy = cursor_y;
         for (int i = 0; clip_board[i]; )
         {
+            if (!i && clip_board[i] == '\n')
+            {
+                i++;
+                cy++;
+                continue;
+            }
             while (clip_board[i] == '\n')
             {
                 memmove(lines + cy + 1, lines + cy, (line_count - cy) * sizeof(char *));
                 lines[cy] = calloc(1, 1);
                 line_count++;
-                cy++;
                 i++;
-                continue;
+                cy++;
             }
+            if (!clip_board[i])
+                break ;
             int j = i;
             while (clip_board[j] && clip_board[j] != '\n')
                 j++;
-#if 0
+
             if (!i)
+
             {
-                int size = strlen(lines[cursor_y]) + j - i + 1;
-                lines[cursor_y] = realloc(lines[cursor_y], size);
-                memcpy(lines[cursor_y] + strlen(lines[cursor_x]), clip_board + i, j - i);
-                lines[size - 1] = 0;
+                //append the first line in clip_board to lines[cursor_y] after cursor_x
+                int line_len = strlen(lines[cy]);
+                lines[cy] = realloc(lines[cy], line_len + j - i + 1);
+
+                memmove(lines[cy] + cursor_x + j - i, lines[cy] + cursor_x, line_len - cursor_x);
+                memcpy(lines[cy] + cursor_x, clip_board, j - i);
+                lines[cy][line_len + j - i] = 0;
                 cy++;
             }
             else
-#endif
             {
-                //ab
-                //cd
                 memmove(lines + cy + 1, lines + cy, (line_count - cy) * sizeof(char *));
                 lines[cy] = malloc(j - i + 1);
                 memcpy(lines[cy], clip_board + i, j - i);
@@ -666,13 +868,8 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
             if (clip_board[j])
                 i++;
         }
-        printf("line_count: %d\n", line_count);
-        for (int y = 0; y < line_count; y++)
-        {
-            printf("line %d: \"%s\"\n", y, lines[y]);
-        }
-        printf("finished copying text\n");
     }
+
     if (new_clip && is_mouse_left_button_pressed)
         clip = 0;
 
@@ -680,25 +877,36 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
     {
         new_clip = 1;
     }
-
     if (clip)
     {
-        //TODO: crash when copying the whole line
-        //TODO: scroll while clip
-        //TODO: control-x + remove clip
-        //TODO: fix scroll on x
-        //TODO: enter on the last line on the screen should move the scroll_y + (copy-paste?)
-        //
-        //!!!!!!!!!TODO: have a good definition of what these mean
+        //TODO:
+        //  copy paragraph with a new line in the end should keep it
+        //  what does new_clip exactly mean?
+        //  do control+A then type something (reset clip variable?) 
+        //  fix cursor while copying/paste
+        //  scroll while clip
+        //  control-x + remove clip
+        //  scroll on x
+        //  enter on the last line on the screen should move the scroll_y + (copy-paste?)
+        //  when you tab and go up it should move the cursor to the 4th char up (what if thereis a tab up?)
+        //  copy to the actual system clipboard?
         int x0 = clip_x0, y0 = clip_y0, x1 = clip_x1, y1 = clip_y1;
+        for (int i = 0; lines[y0][i] && i < clip_x0; i++)
+        {
+            if (lines[y0][i] == '\t')
+                x0 += 3;
+        }
+        for (int i = 0; lines[y1][i] && i < clip_x1; i++)
+        {
+            if (lines[y1][i] == '\t')
+                x1 += 3;
+        }
         if (y0 > y1)
         {
             swap(&y0, &y1);
             swap(&x0, &x1);
         }
-        if (y1 >= line_count)
-            y1 = line_count - 1;
-        printf ("%d %d %d %d\n", x0, y0, x1, y1);
+
         y0 *= FONT_CHAR_HEIGHT * 2;
         y1 *= FONT_CHAR_HEIGHT * 2;
         x0 *= FONT_CHAR_WIDTH * 2;
@@ -714,16 +922,24 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         //x1 += FONT_CHAR_WIDTH * 2;
         if (y0 < 0)
             y0 = 0;
+        //TODO: we need to be precise with the borders
         for (int y = y0; y < y1 + FONT_CHAR_HEIGHT * 2 && y < draw_buffer->height; y++)
         {
+            int cy = ((int)scroll_y + y) / (FONT_CHAR_HEIGHT * 2);
+            int tabs = 0; 
+            for (int i = 0; lines[cy][i]; i++)
+                tabs += (lines[cy][i] == '\t');
+            int line_len = strlen(lines[cy]);
             for (int x = offset_x; x < draw_buffer->width; x++)
             {
                 int in = 1;
                 if (y0 == y1)
                 {
-                    if (x0 < x1 && (x < x0 || x > x1))
+                    if (x1 == x0)
                         in = 0;
-                    if (x0 > x1 && (x < x1 || x > x0))
+                    if (x0 < x1 && (x < x0 || x >= x1))
+                        in = 0;
+                    if (x0 > x1 && (x < x1 || x >= x0))
                         in = 0;
                 }
                 else
@@ -731,16 +947,13 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 
                     if ((y >= y0 && y < y0 + FONT_CHAR_HEIGHT * 2) && x < x0)
                         in = 0;
-                    if ((y >= y1 && y < y1 + FONT_CHAR_HEIGHT * 2) && x > x1)
+                    if ((y >= y1 && y < y1 + FONT_CHAR_HEIGHT * 2) && x >= x1)
                         in = 0;
                 }
                 int cx = (x - offset_x) / (2 * FONT_CHAR_WIDTH);
-                int cy = ((int)scroll_y + y) / (FONT_CHAR_HEIGHT * 2);
-                int tabs = 0; 
-                for (int i = 0; lines[cy][i]; i++)
-                    tabs += (lines[cy][i] == '\t');
-                 if (cx >= (int)strlen(lines[cy]) + 3 * tabs)
-                    in = 0;               
+
+                 if (cx >= line_len + 3 * tabs)
+                    break;              
 #if 0
 
 
@@ -765,30 +978,14 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
                 }
             }
         }
-#if 0
-        for (int y = y0; y < y0 + 5; y++)
-        {
-            for (int x = x0; x < x0 + 5; x++)
-            {
-                draw_buffer->pixels[y * draw_buffer->width + x] = 0xffff0000;
-            }
-        }
-        for (int y = y1; y < y1 + 5; y++)
-        {
-            for (int x = x1; x < x1 + 5; x++)
-            {
-                draw_buffer->pixels[y * draw_buffer->width + x] = 0xffff0000;
-            }
-        }
-#endif
     }
 }
 
 int main(void)
 {
     image_t back_buffer = {
-        .width = 960,
-        .height = 540,
+        .width = 1280,
+        .height = 1280,
     };
     int window_width = back_buffer.width;
     int window_height = back_buffer.height;
@@ -835,7 +1032,7 @@ int main(void)
 
 				SDL_Keycode code = ev.key.keysym.sym;
                 if (code == SDLK_LCTRL)
-                    is_control_key_pressed = 1;
+                    is_control_key_pressed = is_down;
 
 			    if (code == SDLK_ESCAPE)
 					return 0;
