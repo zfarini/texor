@@ -5,11 +5,91 @@
 #include "stb_image.h"
 #include <stdio.h>
 
+#define array_length(arr) (sizeof(arr) / sizeof(*(arr)))
+
+typedef uint32_t u32;
+
 typedef struct {
 	int width;
 	int height;
 	uint32_t *pixels;
-} image_t;
+} Image;
+
+typedef struct {
+    char *data;
+    //TODO: do want this to be unsigned?
+    int length;
+} String;
+
+//TODO: if I have length 0 but I got some data from previous stuff realloc will be a problem
+//TODO: this might be better like string_clone((String){.data = "bla", .length = 3}))
+String cstr_to_string(char *cstr, int length)
+{
+    String s;
+    s.length = length;
+    s.data = malloc(length);
+    memcpy(s.data, cstr, length);
+    return s;
+}
+
+void string_insert_char_at(String *s, int at, char c)
+{
+    assert(at >= 0 && at <= s->length);
+    s->data = realloc(s->data, s->length + 1);
+    memmove(s->data + at + 1, s->data + at, s->length - at);
+    s->data[at] = c;
+    s->length++;
+}
+
+void string_remove_char_at(String *s, int at)
+{
+    assert(at >= 0 && at < s->length);
+    memmove(s->data + at, s->data + at + 1, s->length - (at + 1));
+    s->length--;
+    s->data = realloc(s->data, s->length);
+}
+
+void string_append(String *s1, String s2)
+{
+    s1->data = realloc(s1->data, s1->length + s2.length);
+    memcpy(s1->data + s1->length, s2.data, s2.length);
+    s1->length += s2.length;
+}
+
+void string_insert_at(String *s1, String s2, int at)
+{
+    s1->data = realloc(s1->data, s1->length + s2.length);
+    memmove(s1->data + at + s2.length, s1->data + at, s1->length - at);
+    memcpy(s1->data + at, s2.data, s2.length);
+    s1->length += s2.length;
+}
+
+String int_to_string(int n)
+{
+    String s;
+    int len = (n <= 0);
+    int x = n;
+    while (x)
+    {
+        len++;
+        x/= 10;
+    }
+    s.length = len;
+    s.data = malloc(len);
+    if (x < 0)
+        s.data[0] = '-';
+    else if (x == 0)
+        s.data[0] = '0';
+    x = n;
+    while (x)
+    {
+        s.data[len - 1] = x % 10 + '0';
+        x/= 10;
+        len--;
+
+    }
+    return s;
+}
 
 void swap(int *x, int *y)
 {
@@ -23,7 +103,7 @@ float lerp(float a, float t, float b)
 	return a + t * (b - a);
 }
 
-image_t load_image(char *filename)
+Image load_image(char *filename)
 {
     int w, h, n;
     unsigned char *pixels = stbi_load(filename, &w, &h, &n, 4);
@@ -32,8 +112,9 @@ image_t load_image(char *filename)
         printf("failed to load %s\n", filename);
         assert(0);
     }
+
     assert(n == 3 || n == 4);
-    image_t img;
+    Image img;
     img.width = w;
     img.height = h;
     img.pixels = (uint32_t *)pixels;//malloc(w * h * 4);
@@ -87,7 +168,7 @@ char *load_entire_file(char *filename)
     return result;
 }
 
-static image_t font;
+static Image font;
 
 #define FONT_WIDTH 128
 #define FONT_HEIGHT 64
@@ -100,11 +181,11 @@ static image_t font;
 #define CHAR_HEIGHT (FONT_CHAR_HEIGHT * FONT_SCALE)
 #define TAB_SIZE 2
 
-void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
+void draw_char(Image *draw_buffer, char c, int min_x, int min_y, float scale)
 {
 	int max_x = min_x + scale * FONT_CHAR_WIDTH;
 	int max_y = min_y + scale * FONT_CHAR_HEIGHT;
-    
+
     float start_x = min_x;
     float start_y = min_y;
     float xdiv = 1.0f / (max_x - min_x);
@@ -113,7 +194,7 @@ void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
 	if (min_y < 0) min_y = 0;
 	if (max_x > draw_buffer->width) max_x = draw_buffer->width;
 	if (max_y > draw_buffer->height) max_y = draw_buffer->height;
-    
+
 	for (int y = min_y; y < max_y; y++)
 	{
 		for (int x = min_x; x < max_x; x++)
@@ -124,7 +205,7 @@ void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
                 continue;
             }
 			float tx = (float)(x - start_x) * xdiv;
-			float ty = (float)(y - start_y) * ydiv; 
+			float ty = (float)(y - start_y) * ydiv;
 			//printf("%d %d %d %d %f %f\n", min_x, min_y, max_x, max_y, tx, ty);
 			int fx = tx * FONT_CHAR_WIDTH + ((c - 32) % FONT_COLS) * FONT_CHAR_WIDTH;
 			int fy = ty * FONT_CHAR_HEIGHT + ((c - 32) / FONT_COLS) * FONT_CHAR_HEIGHT;
@@ -157,14 +238,14 @@ void draw_char(image_t *draw_buffer, char c, int min_x, int min_y, float scale)
 	}
 }
 
-void draw_text(image_t *draw_buffer, char *s, int min_x, int min_y, float scale)
+void draw_text(Image *draw_buffer, String s, int min_x, int min_y, float scale)
 {
 	float x = min_x;
 	float y = min_y;
-	for (int i = 0; s[i]; i++)
+	for (int i = 0; i < s.length; i++)
 	{
-		if (s[i] == '\n') continue;
-		if (s[i] == '\t')
+		if (s.data[i] == '\n') continue;
+		if (s.data[i] == '\t')
 		{
 			for (int j = 0; j < TAB_SIZE; j++)
 			{
@@ -173,12 +254,12 @@ void draw_text(image_t *draw_buffer, char *s, int min_x, int min_y, float scale)
 			}
 			continue;
 		}
-		draw_char(draw_buffer, s[i], x, y, scale);
+		draw_char(draw_buffer, s.data[i], x, y, scale);
 		x += FONT_CHAR_WIDTH * scale;
 	}
 }
 
-static char *lines[4096];
+static String lines[4096];
 static int line_count;
 
 static int is_pressed[512];
@@ -196,14 +277,14 @@ static float cursor_w = 4;
 static float cursor_h = CHAR_HEIGHT;
 
 
-static char *clip_board;
+static String clip_board;
 static int clip_y0;
 static int clip_x0;
 static int clip_y1;
 static int clip_x1;
 static int clip;
 // if we got a selected a region and then stopped pressing the mouse then this will be true (meaning next time we try to select we will create a new one)
-static int new_clip; 
+static int new_clip;
 
 static float offset_x = 4 * CHAR_WIDTH + 10;
 static float offset_y;
@@ -218,11 +299,11 @@ int cursor_visual_to_text(int visual_x, int y)
     assert(y >= 0 && y < line_count);
     int result = visual_x;
     int c = 0;
-    for (int i = 0; lines[y][i] && c < visual_x; i++)
+    for (int i = 0; i < lines[y].length  && c < visual_x; i++)
     {
-        if (lines[y][i] == '\t')
+        if (lines[y].data[i] == '\t')
         {
-            //TODO: do make this round 
+            //TODO: do make this round
             if (c + TAB_SIZE > visual_x)
             {
                 result -= visual_x - c;
@@ -236,8 +317,8 @@ int cursor_visual_to_text(int visual_x, int y)
     }
     if (result < 0)
         result = 0;
-    if (result > (int)strlen(lines[y]))
-        result = strlen(lines[y]);
+    if (result > lines[y].length)
+        result = lines[y].length;
     return result;
 }
 
@@ -245,9 +326,9 @@ int cursor_text_to_visual(int x, int y)
 {
     assert(y >= 0 && y < line_count);
     int result = x;
-    for (int i = 0; lines[y][i] && i < x; i++)
+    for (int i = 0; i < lines[y].length && i < x; i++)
     {
-        if (lines[y][i] == '\t')
+        if (lines[y].data[i] == '\t')
             result += TAB_SIZE - 1;
     }
     return result;
@@ -281,29 +362,25 @@ typedef struct {
 static Command undo_buffer[4096];
 static int undo_buffer_count;
 //todo: weird behavior when I input the key on the left of 1
-void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
+void update_and_render_the_editor(Image *draw_buffer, String input_text)
 {
 	if (first_frame)
 	{
 		font = load_image("font.png");
-		lines[0] = calloc(1, 1);
         char *file = load_entire_file("code/main.c");
         for (int i = 0; file[i];)
         {
             while (file[i] == '\n')
             {
-                lines[line_count++] = calloc(1, 1);
+                line_count++;// empty lines
                 i++;
             }
             if (!file[i])
                 break ;
             int j = i;
-            for (; file[j] && file[j] != '\n'; j++)
-                ;
-            lines[line_count] = malloc(j - i + 1);
-            assert(lines[line_count]);
-            memcpy(lines[line_count], file + i, j - i);// "ab\n"
-            lines[line_count][j - i] = 0;
+            while(file[j] && file[j] != '\n')
+                j++;
+            lines[line_count] = cstr_to_string(file + i, j - i);
             line_count++;
             if (!file[j])
                 break ;
@@ -311,6 +388,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         }
         if (file[0] == '\0')
             line_count = 1;
+        free(file);
         first_frame = 0;
 	}
     //undo
@@ -323,22 +401,17 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         {
             case Command_Char:
             {
-                int line_len = strlen(lines[c->cy]);
-                memmove(lines[c->cy] + c->cx, lines[c->cy] + c->cx + 1, line_len - c->cx - 1);
-                lines[c->cy] = realloc(lines[c->cy], line_len);
-                lines[c->cy][line_len - 1] = 0;
+                string_remove_char_at(&lines[c->cy], c->cx);
                 break;
             }
             case Command_Enter:
             {
-                int prev_line_len = strlen(lines[c->cy]);
-                int curr_line_len = strlen(lines[c->cy + 1]);
-                lines[c->cy] = realloc(lines[c->cy], prev_line_len + curr_line_len + 1);
-                memcpy(lines[c->cy] + prev_line_len, lines[c->cy + 1], curr_line_len);
-                lines[c->cy][prev_line_len + curr_line_len] = 0;
-                free(lines[c->cy + 1]);
-                assert(line_count - (c->cy + 2) >= 0);
-                memmove(lines + c->cy + 1, lines + c->cy + 2, (line_count - (c->cy + 2)) * sizeof(char *));
+                string_append(&lines[c->cy], lines[c->cy + 1]);
+                free(lines[c->cy + 1].data);
+                for (int y = c->cy + 1; y < line_count - 1; y++)
+                {
+                    lines[y] = lines[y + 1];
+                }
                 line_count--;
                 break;
             }
@@ -346,26 +419,21 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
             {
                 if (c->cx)
                 {
-                    int line_len = strlen(lines[c->cy]);
-                    lines[c->cy] = realloc(lines[c->cy], line_len + 2);
-                    memmove(lines[c->cy] + c->cx, lines[c->cy] + c->cx - 1, line_len - c->cx + 2);
-                    lines[c->cy][c->cx - 1] = c->removed_char;
+                    string_insert_char_at(&lines[c->cy], c->cx - 1, c->removed_char);
                 }
                 else if (c->cy)
                 {
-                    //TODO: this code can be written in a readable way
-                    int prev_line_len = strlen(lines[c->cy - 1]);
-                    char *newline = malloc(c->cursor_line_length + 1);
-                    memcpy(newline, lines[c->cy - 1] + prev_line_len - c->cursor_line_length, c->cursor_line_length);
-                    newline[c->cursor_line_length] = 0;
+                    String prevline = cstr_to_string(lines[c->cy - 1].data,
+                                                     lines[c->cy - 1].length - c->cursor_line_length);
+                    String newline = cstr_to_string(lines[c->cy - 1].data + lines[c->cy - 1].length - c->cursor_line_length,
+                                                    c->cursor_line_length);
 
-                    char *prevline = malloc(prev_line_len - c->cursor_line_length + 1);
-                    memcpy(prevline, lines[c->cy - 1], prev_line_len - c->cursor_line_length);
-                    prevline[prev_line_len - c->cursor_line_length] = 0;
-
-                    free(lines[c->cy - 1]);
+                    free(lines[c->cy - 1].data);
                     lines[c->cy - 1] = prevline;
-                    memmove(lines + c->cy + 1, lines + c->cy, (line_count - (c->cy + 1)) * sizeof(char *));
+                    for (int i = line_count; i >= c->cy + 1; i--)
+                    {
+                        lines[i] = lines[i - 1];
+                    }
                     lines[c->cy] = newline;
                     line_count++;
                 }
@@ -387,8 +455,8 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         }
         cursor_x = c->cx;
         cursor_y = c->cy;
-        assert(cursor_y >=0 && cursor_y < line_count);
-        assert(cursor_x >= 0 && cursor_x <= (int)strlen(lines[cursor_y]));
+        assert(cursor_y >= 0 && cursor_y < line_count);
+        assert(cursor_x >= 0 && cursor_x <= lines[cursor_y].length);
     }
 
 	if (is_pressed[SDL_SCANCODE_RETURN])
@@ -398,27 +466,19 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         c->type = Command_Enter;
         c->cx = cursor_x;
         c->cy = cursor_y;
-		char *newline = strdup(lines[cursor_y] + cursor_x);
 
-		//todo: this is just a realloc
-		char *oldline = malloc(cursor_x + 1);
-		oldline[cursor_x] = 0;
-		memcpy(oldline, lines[cursor_y], cursor_x);
-		free(lines[cursor_y]);
+        String oldline = cstr_to_string(lines[cursor_y].data, cursor_x);
+        String newline = cstr_to_string(lines[cursor_y].data + cursor_x, lines[cursor_y].length - cursor_x);
+        free(lines[cursor_y].data);
 		lines[cursor_y] = oldline;
-
-	//	lines[cursor_y] = realloc(lines[cursor_y], cursor_x + 1);
-
 		for (int i = line_count; i > cursor_y + 1; i--)
 		{
 			lines[i] = lines[i - 1];
 		}
-		cursor_y++;
-		lines[cursor_y] = newline;
+		lines[cursor_y + 1] = newline;
+        cursor_y++;
 		cursor_x = 0;
 		line_count++;
-
-
 	}
 	if (is_pressed[SDL_SCANCODE_BACKSPACE] && !clip)
 	{
@@ -427,19 +487,19 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         c->type = Command_Backspace;
         c->cx = cursor_x;
         c->cy = cursor_y;
-        c->cursor_line_length = strlen(lines[c->cy]);
+        c->cursor_line_length = lines[c->cy].length;
 
 		if (cursor_x)
 		{
-            c->removed_char = lines[cursor_y][cursor_x - 1];
-			memmove(lines[cursor_y] + cursor_x - 1, lines[cursor_y] + cursor_x, strlen(lines[cursor_y]) - cursor_x + 1);
-			cursor_x--;
+            c->removed_char = lines[cursor_y].data[cursor_x - 1];
+            string_remove_char_at(&lines[cursor_y], cursor_x - 1);
+            cursor_x--;
 		}
 		else if (cursor_y)
 		{
-			cursor_x = strlen(lines[cursor_y - 1]);
-			lines[cursor_y - 1] = realloc(lines[cursor_y - 1], strlen(lines[cursor_y - 1]) + strlen(lines[cursor_y]) + 1);
-			memcpy(lines[cursor_y - 1] + strlen(lines[cursor_y - 1]), lines[cursor_y], strlen(lines[cursor_y]) + 1);
+			cursor_x = lines[cursor_y - 1].length;
+            string_append(&lines[cursor_y - 1], lines[cursor_y]);
+            free(lines[cursor_y].data);
 			for (int y = cursor_y; y < line_count - 1; y++)
 			{
 				lines[y] = lines[y + 1];
@@ -455,7 +515,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 	}
 	if (is_pressed[SDL_SCANCODE_RIGHT])
 	{
-		if (cursor_x < (int)strlen(lines[cursor_y]))
+		if (cursor_x < lines[cursor_y].length)
 			cursor_x++;
 	}
     {
@@ -464,7 +524,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         {
             if (cursor_y)
                 cursor_y--;
-            cursor_x = cursor_visual_to_text(cursor_visual_x, cursor_y);            
+            cursor_x = cursor_visual_to_text(cursor_visual_x, cursor_y);
         }
         if (is_pressed[SDL_SCANCODE_DOWN])
         {
@@ -475,16 +535,12 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
     }
 
 	if (is_pressed[SDL_SCANCODE_TAB])
-	{
-		if (!input_text)
-			input_text = "\t";
-		else
-		{
-			int input_len = strlen(input_text);
-			char *new_text = calloc(1, input_len + 2);
-			memcpy(new_text, input_text, input_len);
-			new_text[input_len] = '\t';
-		}
+    {
+        //TODO: where we should insert?
+        String t;
+        t.data = "\t";
+        t.length = 1;
+        string_append(&input_text, t);
 	}
 
     // selection
@@ -511,12 +567,13 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
     if (is_control_key_pressed && is_pressed[SDL_SCANCODE_A])
     {
         clip = 1;
-        clip_x0 = 0, clip_y0 = 0, clip_y1 = line_count - 1, clip_x1 = strlen(lines[line_count - 1]);
+        clip_x0 = 0, clip_y0 = 0, clip_y1 = line_count - 1, clip_x1 = lines[line_count - 1].length;
     }
 
     // copy / cut
+
     int copy = (is_control_key_pressed && (is_pressed[SDL_SCANCODE_X] || is_pressed[SDL_SCANCODE_C]));
-    int cut = (is_control_key_pressed && is_pressed[SDL_SCANCODE_X]) || (is_pressed[SDL_SCANCODE_BACKSPACE]) || input_text;
+    int cut = (is_control_key_pressed && is_pressed[SDL_SCANCODE_X]) || (is_pressed[SDL_SCANCODE_BACKSPACE]) || input_text.length;
     if (clip && (copy || cut))
     {
         //calc new clip_board
@@ -527,165 +584,121 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
             swap(&y0, &y1);
             swap(&x0, &x1);
         }
+        assert(y0 >= 0 && y0 < line_count);
+        assert(y1 >= 0 && y1 < line_count);
+        assert(x0 >= 0 && x0 <= lines[y0].length);
+        assert(x1 >= 0 && x1 <= lines[y1].length);
         if (y0 < 0)
-          y0 = 0;
+            y0 = 0;
         if (y1 >= line_count)
-          y1 = line_count - 1;
+            y1 = line_count - 1;
         if (copy)
         {
-            free(clip_board);
-            clip_board = calloc(1, 1);
-            int clip_board_size = 1;
-            for (int y = y0; y <= y1; y++)
+            if (clip_board.length)
+                free(clip_board.data);
+            clip_board.data = 0;
+            clip_board.length = 0;
+            if (y0 == y1)
             {
-                int line_len = strlen(lines[y]);
-                int add_newline = (y < y1);
-                if (y0 == y1)
-                {
-
-                    if (x0 > x1)
-                        swap(&x0, &x1);
-                    clip_board = realloc(clip_board, x1 - x0 + 1);
-                    memcpy(clip_board, lines[y] + x0, x1 - x0);
-                    clip_board[x1 - x0] = 0;
-                }
-                else if (y == y0)
-                {// "abc|def"
-                    clip_board = realloc(clip_board, clip_board_size + line_len - x0 + add_newline);
-                    memcpy(clip_board + clip_board_size - 1, lines[y] + x0, line_len - x0);
-                    if (add_newline)
-                        clip_board[clip_board_size + line_len - x0 - 1] = '\n';
-                    clip_board[clip_board_size + line_len - x0 + add_newline - 1] = 0;
-                    clip_board_size += line_len - x0 + add_newline;
-                }
-                else
-                {
-                    clip_board = realloc(clip_board, clip_board_size + line_len + add_newline);
-                    memcpy(clip_board + clip_board_size - 1, lines[y], line_len);
-                    if (add_newline)
-                        clip_board[clip_board_size + line_len - 1] = '\n';
-                    clip_board[clip_board_size + line_len + add_newline - 1] = 0;
-                    clip_board_size += line_len + add_newline;
-                }
+                if (x0 > x1)
+                    swap(&x0, &x1);
+                string_append(&clip_board, (String){.data = lines[y0].data + x0,
+                                  x1 - x0});
             }
-            SDL_SetClipboardText(clip_board);
+            else
+            {
+                string_append(&clip_board, (String){.data = lines[y0].data + x0,
+                                  .length = lines[y0].length - x0});
+                for (int y = y0 + 1; y < y1; y++)
+                {
+                    string_append(&clip_board, (String){.data = "\n", .length = 1});
+                    string_append(&clip_board, lines[y]);
+                }
+                string_append(&clip_board, (String){.data = "\n", .length = 1});
+                string_append(&clip_board, (String){.data = lines[y1].data,
+                                  .length = x1});
+            }
+            printf("clipboard: \"%.*s\"\n", clip_board.length, clip_board.data);
+            //SDL_SetClipboardText(clip_board);
         }
         if (cut)
         {
-            //remove_selected_text...
-            int cy = y0;
-
-            cursor_y = y0;
-            cursor_x = x0;
-            for (int y = y0; y <= y1; y++)
+            if (y0 == y1)
             {
-                int line_len = strlen(lines[cy]);
-                if (y0 == y1)
-                {
-                    if (x0 > x1)
-                        swap(&x0, &x1);
-                    char *newline = malloc(line_len - (x1 - x0) + 1);
-                    memcpy(newline, lines[cy], x0);
-                    memcpy(newline + x0, lines[cy] + x1, line_len - x1);
-                    newline[line_len - (x1 - x0)] = 0;
-                    free(lines[cy]);
-                    lines[cy] = newline;
-                    cy++;
-                }
-                else if (y == y0)
-                {
-                    //note: this just shrink it
-                    char *newline = malloc(x0 + 1);
-                    memcpy(newline, lines[cy], x0);
-                    newline[x0] = 0;
-                    free(lines[cy]);
-                    lines[cy] = newline;
-                    cy++;
-                }
-                else if (y == y1)
-                {
-                    //todo: append this to the first line ?
-                    assert(cy);
-                    int prev_line_len = strlen(lines[cy - 1]);
-                    char *newline = malloc(prev_line_len + line_len - x1 + 1); 
-                    memcpy(newline, lines[cy - 1], prev_line_len);
-                    memcpy(newline + prev_line_len, lines[cy] + x1, line_len - x1);
-                    newline[prev_line_len + line_len - x1] = 0;
-                    free(lines[cy - 1]);
-                    lines[cy - 1] = newline;
-                    memmove(lines + cy, lines + cy + 1, (line_count - cy - 1) * sizeof(char *));
-                    line_count--;
-                }
-                else
-                {
-                    //just remove this line
-                    memmove(lines + cy, lines + cy + 1, (line_count - cy - 1) * sizeof(char *));
-                    line_count--;
-                }
+                if (x0 > x1)
+                    swap(&x0, &x1);
+                memmove(lines[y0].data + x0, lines[y0].data +  x1, lines[y0].length - x1);
+                lines[y0].length -= x1 - x0;
+            }
+            else
+            {
+                lines[y0].data = realloc(lines[y0].data, x0 + lines[y1].length - x1);
+                memcpy(lines[y0].data + x0, lines[y1].data + x1, lines[y1].length - x1);
+                lines[y0].length = x0 + lines[y1].length - x1;
+                for (int y = y0 + 1; y <= y1; y++)
+                    free(lines[y].data);
+                for (int i = y1 + 1; i < line_count; i++)
+                    lines[i - y1 + y0] = lines[i];
+                line_count -= y1 - y0;
             }
             clip = 0;
             new_clip = 1;
         }
     }
-    if (is_control_key_pressed && is_pressed[SDL_SCANCODE_V] && clip_board && !clip)
+#if 0
+    if (is_control_key_pressed && is_pressed[SDL_SCANCODE_V] && clip_board.length && !clip)
     {
-        Command *c = &undo_buffer[undo_buffer_count];
-        undo_buffer_count++;
-        c->type = Command_Paste;
         int cy = cursor_y;
-        
-        for (int i = 0; clip_board[i]; )
+
+        //TODO: what if we make clip_board an array of strings?
+        int i = 0;
+        if (clip_board.data[0] == '\n')
         {
-            if (!i && clip_board[i] == '\n')
-            {
-                i++;
-                cy++;
-                continue;
-            }
-            while (clip_board[i] == '\n')
+            i++;
+        }
+        else
+        {
+            int j = 0;
+            while (j < clip_board.length && clip_board.data[j] != '\n')
+                j++;
+            string_append(&lines[cy], (String){clip_board.data, j});
+            i = j;
+        }
+        cy++;
+        while (i < clip_board.length)
+        {
+            while (i < clip_board.length && clip_board.data[i] == '\n')
             {
                 memmove(lines + cy + 1, lines + cy, (line_count - cy) * sizeof(char *));
-                lines[cy] = calloc(1, 1);
+                lines[cy] = (String){0};
                 line_count++;
                 i++;
                 cy++;
             }
-            if (!clip_board[i])
+            if (i == clip_board.length)
                 break ;
             int j = i;
-            while (clip_board[j] && clip_board[j] != '\n')
+            while (j < clip_board.length && clip_board.data[j] != '\n')
                 j++;
 
-            if (!i)
+            memmove(lines + cy + 1, lines + cy, (line_count - cy) * sizeof(char *));
+            lines[cy] = cstr_to_string(clip_board.data + i, j - i);
+            line_count++;
+            cy++;
 
-            {
-                //append the first line in clip_board to lines[cursor_y] after cursor_x
-                int line_len = strlen(lines[cy]);
-                lines[cy] = realloc(lines[cy], line_len + j - i + 1);
-
-                memmove(lines[cy] + cursor_x + j - i, lines[cy] + cursor_x, line_len - cursor_x);
-                memcpy(lines[cy] + cursor_x, clip_board, j - i);
-                lines[cy][line_len + j - i] = 0;
-                cy++;
-            }
-            else
-            {
-                memmove(lines + cy + 1, lines + cy, (line_count - cy) * sizeof(char *));
-                lines[cy] = malloc(j - i + 1);
-                memcpy(lines[cy], clip_board + i, j - i);
-                lines[cy][j - i] = 0;
-                line_count++;
-                cy++;
-            }
             i = j;
             // if the last char in the string is a newline, we make a line for it
-            if (clip_board[j] == '\n' && clip_board[j + 1])
+            if (clip_board.data[j] == '\n' && clip_board.data[j + 1])
                 i++;
         }
-        if (cy)
-            cursor_y = cy - 1;
-        cursor_x = strlen(lines[cursor_y]);
+        if (cy == cursor_y + 1)
+            cursor_x += clip_board.length;
+        else
+            cursor_x = lines[cy - 1].length;
+        assert(cy);
+        cursor_y = cy - 1;
     }
+#endif
     //update cursor by mouse position
     if (is_mouse_left_button_pressed)
     {
@@ -696,20 +709,10 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         cursor_x = cursor_visual_to_text(mouse_cursor_x, cursor_y);
     }
 
-	if (input_text)
+	if (input_text.length)
 	{
-		char *text = input_text;
-		int text_len = strlen(text);
-		int curr_line_len = strlen(lines[cursor_y]);
-		assert(cursor_x <= curr_line_len && cursor_x >= 0);
-
-		lines[cursor_y] = realloc(lines[cursor_y], text_len + curr_line_len + 1);
-		memmove(lines[cursor_y] + cursor_x + text_len, lines[cursor_y] + cursor_x, curr_line_len - cursor_x);
-		for (int i = cursor_x; i < cursor_x + text_len; i++)
-		{
-			lines[cursor_y][i] = text[i - cursor_x];
-		}
-        for (int i = 0; input_text[i]; i++)
+        string_insert_at(&lines[cursor_y], input_text, cursor_x);
+        for (int i = 0; i < input_text.length; i++)
         {
             Command *c = &undo_buffer[undo_buffer_count];
             undo_buffer_count++;
@@ -717,23 +720,22 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
             c->cx = cursor_x + i;
             c->cy = cursor_y;
         }
-		cursor_x += text_len;
-		lines[cursor_y][curr_line_len + text_len] = 0;
+		cursor_x += input_text.length;
 	}
 
     //
     //
-    //rendering 
+    //rendering
     //
     //
     //
-    
+
     float dt = 1.0f / 60;
 
     int cursor_visual_y = cursor_y;
     int cursor_visual_x = cursor_text_to_visual(cursor_x, cursor_y);
 
-    
+
     float ddy = mouse_scroll_y * 10000 - scroll_dy * 4;
     scroll_y += ddy * 0.5f * dt * dt + dt * scroll_dy;
     scroll_dy += ddy * dt;
@@ -760,7 +762,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
     }
 
 
-    
+
     if (scroll_y < 0)
         scroll_y = 0, scroll_dy = 0;
     if (scroll_x < 0)
@@ -769,7 +771,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         scroll_y = 0, scroll_dy = 0;
     else if (scroll_y + draw_buffer->height > line_count * CHAR_HEIGHT)
         scroll_y = line_count * CHAR_HEIGHT  - draw_buffer->height;
-    
+
 	//clear the screen
 	for (int y = 0; y < draw_buffer->height; y++)
 	{
@@ -779,47 +781,30 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
     //draw the text
     {
         float y = offset_y;
-        //TODO!!: don't iterate over all lines
+        //TODO: don't iterate over all lines
         for (int i = 0; i < line_count; i++)
         {
-            char s[10];
-            {
-                int x = i;
-                int len = (i == 0);
-                while (x)
-                {
-                    len++;
-                    x /= 10;
-                }
-                s[len] = 0;
-                x = i;
-                if (!x)
-                    s[0] = '0';
-                int j = len - 1;
-                while (x)
-                {
-                    s[j--] = x % 10 + '0';
-                    x /= 10;
-                }
-            }
+
             draw_text(draw_buffer, lines[i], offset_x - scroll_x, y - scroll_y, FONT_SCALE);
 #if 1
+            String s = int_to_string(i);
+
             for (int cy = y - scroll_y; cy < y - scroll_y + CHAR_HEIGHT && cy <draw_buffer->height; cy++)
             {
                 for (int cx = 0; cx < offset_x && cx < draw_buffer->width; cx++)
                 {
                     if (cy >= 0)
-                    draw_buffer->pixels[cy * draw_buffer->width + cx] = 0;
+                        draw_buffer->pixels[cy * draw_buffer->width + cx] = 0;
                 }
             }
 
             draw_text(draw_buffer, s, 0, y - scroll_y, FONT_SCALE);
+            free(s.data);
 #endif
 		    y += CHAR_HEIGHT;
+
 	    }
     }
-
-
     // draw overlay for line numbers
 	for (int y = 0; y < draw_buffer->height; y++)
 	{
@@ -837,20 +822,12 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 				((uint32_t)(b * 255 + 0.5f) << 8);
 		}
 	}
-#if 0
-    for (int y = mouse_y; y < mouse_y + 5; y++)
-    {
-        for (int x = mouse_x; x < mouse_x + 5; x++)
-        {
-            draw_buffer->pixels[y * draw_buffer->width + x] = 0xffff0000;
-        }
-    }
-#endif
+#if 1
     // draw the selection overlay
     if (clip)
     {
         //TODO:
-        //  if the cursor moved while there is selection it should be removed (but right now we move the cursor with the selection so it will always be true) 
+        //  if the cursor moved while there is selection it should be removed (but right now we move the cursor with the selection so it will always be true)
         //  order of doing stuff
         int y0 = clip_y0;
         int y1 = clip_y1;
@@ -871,10 +848,10 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
         for (int y = (y0 < 0 ? 0 : y0); y < y1 + CHAR_HEIGHT && y < draw_buffer->height; y++)
         {
             int cy = (scroll_y + y - offset_y) / CHAR_HEIGHT;
-            int tabs = 0; 
-            for (int i = 0; lines[cy][i]; i++)
-                tabs += (lines[cy][i] == '\t');
-            int line_len = strlen(lines[cy]);
+            int tabs = 0;
+            for (int i = 0; i < lines[cy].length; i++)
+                tabs += (lines[cy].data[i] == '\t');
+
             for (int x = offset_x; x < draw_buffer->width; x++)
             {
                 int in = 1;
@@ -897,8 +874,8 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
                 }
                 int cx = (x - + scroll_x - offset_x) / (CHAR_WIDTH);
 
-                 if (cx >= line_len + 1 + (TAB_SIZE - 1) * tabs)
-                    break;              
+                if (cx >= lines[cy].length + 1 + (TAB_SIZE - 1) * tabs)
+                    break;
                 if (in)
                 {
                     uint32_t p = draw_buffer->pixels[y * draw_buffer->width + x];
@@ -911,12 +888,13 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
                     b = lerp(b, 0.7, 0);
 #endif
                     draw_buffer->pixels[y * draw_buffer->width + x] = ((uint32_t)(r * 255 + 0.5f) << 24) |
-                                                                      ((uint32_t)(g * 255 + 0.5f) << 16) |
-                                                                      ((uint32_t)(b * 255 + 0.5f) << 8);
+                        ((uint32_t)(g * 255 + 0.5f) << 16) |
+                        ((uint32_t)(b * 255 + 0.5f) << 8);
                 }
             }
         }
     }
+#endif
     //draw the cursor
 #if 1
 	{
@@ -954,7 +932,7 @@ void update_and_render_the_editor(image_t *draw_buffer, char *input_text)
 
 int main(void)
 {
-    image_t back_buffer = {
+    Image back_buffer = {
         .width = 960,
         .height = 540,
     };
@@ -963,26 +941,26 @@ int main(void)
 
     SDL_Init(SDL_INIT_VIDEO);
     SDL_Window *window = SDL_CreateWindow("texor", 0, 1500,
-            window_width, window_height, SDL_WINDOW_SHOWN);
+                                          window_width, window_height, SDL_WINDOW_SHOWN);
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
     SDL_SetWindowMinimumSize(window, window_width, window_height);
     //TODO: should these takes window or back_buffer width/height
     SDL_RenderSetLogicalSize(renderer, window_width, window_height);
     SDL_RenderSetIntegerScale(renderer, 1);
     SDL_Texture *screen_texture = SDL_CreateTexture(renderer,
-        SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING,
-        back_buffer.width, back_buffer.height);
+                                                    SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING,
+                                                    back_buffer.width, back_buffer.height);
     back_buffer.pixels = malloc(back_buffer.width * back_buffer.height * sizeof(uint32_t));
 	assert(back_buffer.pixels);
 	assert(window && renderer && screen_texture);
-    
+
     printf("%f %f\n", CHAR_WIDTH, CHAR_HEIGHT);
 
-        unsigned int t1 = SDL_GetTicks();
+    unsigned int t1 = SDL_GetTicks();
     while (1)
     {
 		int enter = 0, backspace = 0;
-		char *input_text = 0;
+		String input_text = {};
         SDL_Event ev;
 		memset(is_pressed, 0, sizeof(is_pressed));
         mouse_scroll_y = 0;
@@ -994,8 +972,7 @@ int main(void)
             }
 			else if (ev.type == SDL_TEXTINPUT)
 			{
-				input_text = strdup(ev.text.text);
-
+                input_text = cstr_to_string(ev.text.text, strlen(ev.text.text));
 			}
 			else if (ev.type == SDL_KEYDOWN || ev.type == SDL_KEYUP)
 			{
@@ -1027,7 +1004,7 @@ int main(void)
         t1 = SDL_GetTicks();
 		update_and_render_the_editor(&back_buffer, input_text);
         //printf("%d\n", SDL_GetTicks() - t1);
-		free(input_text);
+		free(input_text.data);
         SDL_RenderClear(renderer);
         SDL_UpdateTexture(screen_texture, NULL, back_buffer.pixels, window_width * 4);
         SDL_RenderCopy(renderer, screen_texture, NULL, NULL);
