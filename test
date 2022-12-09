@@ -1,0 +1,621 @@
+#include <SDL2/SDL.h>
+#include <assert.h>
+#define STBI_ONLY_PNG
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#include <stdio.h>
+
+#define array_length(arr) (sizeof(arr) / sizeof(*(arr)))
+
+typedef struct Image {
+	int width;
+	int height;
+	uint32_t *pixels;
+} Image;
+
+void swap(int *x, int *y)
+{
+    int temp = *x;
+    *x = *y;
+    *y = temp;
+}
+
+float lerp(float a, float t, float b)
+{
+	return a + t * (b - a);
+}
+
+Image load_image(char *filename)
+{
+    int w, h, n;
+    unsigned char *pixels = stbi_load(filename, &w, &h, &n, 4);
+    if (!pixels)
+    {
+        printf("failed to load %s\n", filename);
+        assert(0);
+    }
+
+    assert(n == 3 || n == 4);
+    Image img;
+    img.width = w;
+    img.height = h;
+    img.pixels = (uint32_t *)pixels;//malloc(w * h * 4);
+    //pixels are 0xRRGGBBAA
+    uint32_t *pixel = img.pixels;
+    for (int y = 0; y < img.height; y++)
+    {
+        for (int x = 0; x < img.width; x++)
+        {
+			uint32_t p = *pixel;
+			uint32_t r = (p >> 0)  & 0xFF;
+			uint32_t g = (p >> 8)  & 0xFF;
+			uint32_t b = (p >> 16) & 0xFF;
+			uint32_t a = (p >> 24) & 0xFF;
+            *pixel = (r << 24) | (g << 16) | (b << 8) | (a << 0);
+            pixel++;
+        }
+    }
+    //stbi_image_free(pixels);
+    return img;
+}
+
+char *load_entire_file(char *filename)
+{
+    FILE *f = fopen(filename, "r");
+    if (!f)
+    {
+        printf("failed to load file: %s\n", filename);
+        assert(f);
+        return 0;
+    }
+    fseek(f, 0, SEEK_END);
+    long length = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *result = malloc(length + 1);
+    assert(result);
+    fread(result, 1, length, f);
+    result[length] = 0;
+    fclose(f);
+    //TODO: what should we do about '\r'?
+    for (int i = 0; i < length;)
+    {
+        if (result[i] == '\r')
+        {
+            memmove(result + i, result + i + 1, length - i);
+            length--;
+        }
+        else
+            i++;
+    }
+    return result;
+}
+
+static Image font;
+
+#define FONT_WIDTH 128
+#define FONT_HEIGHT 64
+#define FONT_COLS 18
+#define FONT_ROWS 7
+#define FONT_CHAR_WIDTH (FONT_WIDTH / FONT_COLS)
+#define FONT_CHAR_HEIGHT (FONT_HEIGHT / FONT_ROWS)
+#define FONT_SCALE 2.0f
+#define CHAR_WIDTH (FONT_CHAR_WIDTH * FONT_SCALE)
+#define CHAR_HEIGHT (FONT_CHAR_HEIGHT * FONT_SCALE)
+#define TAB_SIZE 2
+
+void draw_rect(Image *draw_buffer, int min_x, int min_y, int max_x, int max_y,
+               float r, float g, float b, float a)
+{
+    if (min_x < 0) min_x = 0;
+	if (min_y < 0) min_y = 0;
+	if (max_x > draw_buffer->width) max_x = draw_buffer->width;
+	if (max_y > draw_buffer->height) max_y = draw_buffer->height;
+
+    for (int y = min_y; y < max_y; y++)
+	{
+		for (int x = min_x; x < max_x; x++)
+		{
+            uint32_t p = draw_buffer->pixels[y * draw_buffer->width + x];
+            float dr = ((p >> 24) & 0xFF) / 255.0f;
+            float dg = ((p >> 16) & 0xFF) / 255.0f;
+            float db = ((p >> 8) & 0xFF) / 255.0f;
+
+            dr = lerp(dr, a, r);
+            dg = lerp(dg, a, g);
+            db = lerp(db, a, b);
+            draw_buffer->pixels[y* draw_buffer->width + x] =
+            ((uint32_t)(dr * 255 + 0.5f) << 24) |
+            ((uint32_t)(dg * 255 + 0.5f) << 16) |
+            ((uint32_t)(db * 255 + 0.5f) << 8);
+        }
+	}
+}
+
+void draw_char(Image *draw_buffer, char c, int min_x, int min_y, float scale)
+{
+	int max_x = min_x + scale * FONT_CHAR_WIDTH;
+	int max_y = min_y + scale * FONT_CHAR_HEIGHT;
+
+    float start_x = min_x;
+    float start_y = min_y;
+    float xdiv = 1.0f / (max_x - min_x);
+    float ydiv = 1.0f / (max_y - min_y);
+	if (min_x < 0) min_x = 0;
+	if (min_y < 0) min_y = 0;
+	if (max_x > draw_buffer->width) max_x = draw_buffer->width;
+	if (max_y > draw_buffer->height) max_y = draw_buffer->height;
+
+	for (int y = min_y; y < max_y; y++)
+	{
+		for (int x = min_x; x < max_x; x++)
+		{
+            if (c > '~' || c < 32)
+            {
+                draw_buffer->pixels[y * draw_buffer->width + x] = 0xff00ff00;
+                continue;
+            }
+			float tx = (float)(x - start_x) * xdiv;
+			float ty = (float)(y - start_y) * ydiv;
+			int fx = tx * FONT_CHAR_WIDTH + ((c - 32) % FONT_COLS) * FONT_CHAR_WIDTH;
+			int fy = ty * FONT_CHAR_HEIGHT + ((c - 32) / FONT_COLS) * FONT_CHAR_HEIGHT;
+			assert(fx < font.width);
+			assert(fy < font.height);
+            assert(fx >= 0);
+            assert(fy >= 0);
+			uint32_t s = font.pixels[fy * font.width + fx];
+			draw_buffer->pixels[y * draw_buffer->width + x] = s;
+        }
+	}
+}
+
+void draw_text(Image *draw_buffer, char *s, int min_x, int min_y, float scale)
+{
+	float x = min_x;
+	float y = min_y;
+	for (int i = 0; s[i]; i++)
+	{
+		if (s[i] == '\n') continue;
+		if (s[i] == '\t')
+		{
+			for (int j = 0; j < TAB_SIZE; j++)
+			{
+				draw_char(draw_buffer, ' ', x, y, scale);
+				x += FONT_CHAR_WIDTH * scale;
+			}
+			continue;
+		}
+		draw_char(draw_buffer, s[i], x, y, scale);
+		x += FONT_CHAR_WIDTH * scale;
+	}
+}
+
+
+static char *buffer;
+int buffer_size;
+
+static int cursor_pos;
+static int cursor_prev_pos;
+
+static int is_pressed[512];
+static int is_control_key_pressed;
+static int mouse_prev_x, mouse_prev_y;
+static int mouse_x, mouse_y;
+static float mouse_scroll_y;
+static int is_mouse_left_button_pressed;
+
+
+static float offset_x = 4 * CHAR_WIDTH + 10;
+static float offset_y;
+static float scroll_y;
+static float scroll_x;
+static float scroll_dy;
+
+static int first_frame = 1;
+
+static int selection_start_pos;
+static int selection_end_pos;
+static int selection;
+static int new_selection;
+static char *clipboard;
+
+void get_line_and_col_from_pos(int pos, int *line, int *col)
+{
+    *line = 0;
+    *col = 0;
+    for (int i = 0; buffer[i]; i++)
+    {
+        if (i == pos)
+            break;
+        if (buffer[i] == '\n')
+        {
+            *line = *line + 1;
+            *col = 0;
+        }
+        else
+            *col = *col + 1;
+    }
+}
+
+int get_pos_from_line_and_col(int line, int col)
+{
+    if (line < 0)
+        return 0;
+    if (col < 0)
+        col = 0;
+    //find line start and add to it col? + clamp it
+    int curr_line = 0;
+    for (int i = 0; buffer[i]; i++)
+    {
+
+        if (curr_line == line)
+        {
+            int line_end = 0;
+            while (buffer[i + line_end] && buffer[i + line_end] != '\n')
+                line_end++;
+            if (col > line_end)
+                col = line_end;
+            return i + col;
+        }
+        if (buffer[i] == '\n')
+            curr_line++;
+
+    }
+    return buffer_size;
+}
+
+int screen_pos_to_buffer_pos(int screen_x, int screen_y)
+{
+    int line = (mouse_y + scroll_y - offset_y) / CHAR_HEIGHT;
+    int col = (mouse_x + scroll_x - offset_x) / CHAR_WIDTH;
+    return get_pos_from_line_and_col(line, col);
+}
+
+void update_and_render_the_editor(Image *draw_buffer, char *input_text)
+{
+    if (first_frame)
+    {
+        font = load_image("font.png");
+        buffer = load_entire_file("test");
+        buffer_size = strlen(buffer) + 1;
+        first_frame = 0;
+    }
+    int cursor_save_pos = cursor_pos;
+    if (is_pressed[SDL_SCANCODE_RETURN])
+    {
+        buffer = realloc(buffer, buffer_size + 1);
+        memmove(buffer + cursor_pos + 1, buffer + cursor_pos, buffer_size - cursor_pos);
+        buffer[cursor_pos] = '\n';
+        cursor_pos++;
+        buffer_size++;
+    }
+    if (is_pressed[SDL_SCANCODE_BACKSPACE] && !selection)
+    {
+        if (cursor_pos)
+        {
+            cursor_pos--;
+            memmove(buffer + cursor_pos, buffer + cursor_pos + 1, buffer_size - cursor_pos - 1);
+            buffer_size--;
+        }
+    }
+    if (is_pressed[SDL_SCANCODE_LEFT])
+    {
+        if (cursor_pos)
+            cursor_pos--;
+    }
+    if (is_pressed[SDL_SCANCODE_RIGHT])
+    {
+        if (cursor_pos < buffer_size)
+            cursor_pos++;
+    }
+    {
+        int line, col;
+        get_line_and_col_from_pos(cursor_pos, &line, &col);
+
+        if (is_pressed[SDL_SCANCODE_UP])
+        {
+            cursor_pos = get_pos_from_line_and_col(line - 1, col);
+        }
+        if (is_pressed[SDL_SCANCODE_DOWN])
+        {
+            cursor_pos = get_pos_from_line_and_col(line + 1, col);
+        }
+    }
+    if (input_text[0])
+    {
+        int text_len = strlen(input_text);
+        buffer = realloc(buffer, buffer_size + text_len);
+        memmove(buffer + cursor_pos + text_len, buffer + cursor_pos, buffer_size - cursor_pos);
+        memcpy(buffer + cursor_pos, input_text, text_len);
+        buffer_size += text_len;
+        cursor_pos += text_len;
+    }
+    if (cursor_save_pos != cursor_pos)
+        selection = 0;
+    // mouse click & selection
+    {
+        int mouse_pos = screen_pos_to_buffer_pos(mouse_x, mouse_y);
+        int mouse_prev_pos = screen_pos_to_buffer_pos(mouse_prev_x, mouse_prev_y);
+        if (is_mouse_left_button_pressed)
+        {
+            cursor_pos = mouse_pos;
+        }
+        if (is_mouse_left_button_pressed && (mouse_x != mouse_prev_x || mouse_y != mouse_prev_y))
+        {
+            if (!selection || new_selection)
+            {
+                new_selection = 0;
+                selection = 1;
+                selection_start_pos = mouse_prev_pos;
+            }
+            selection_end_pos = mouse_pos;
+        }
+        if (new_selection && is_mouse_left_button_pressed)
+            selection = 0;
+        if (!is_mouse_left_button_pressed)
+            new_selection = 1;
+        if (is_control_key_pressed && is_pressed[SDL_SCANCODE_A])
+        {
+            selection = 1;
+            selection_start_pos = 0;
+            selection_end_pos = buffer_size;
+        }
+    }
+    if (selection)
+    {
+        int pos_start = selection_start_pos;
+        int pos_end = selection_end_pos;
+        if (pos_start > pos_end)
+            swap(&pos_start, &pos_end);
+        int len = pos_end - pos_start;
+        if (is_control_key_pressed &&
+            (is_pressed[SDL_SCANCODE_C] || is_pressed[SDL_SCANCODE_X]))
+        {
+
+            clipboard = realloc(clipboard, len + 1);
+            memcpy(clipboard, buffer + pos_start, len);
+            clipboard[len] = 0;
+            printf("clipboard: \"%s\"\n", clipboard);
+        }
+        if ((is_control_key_pressed && is_pressed[SDL_SCANCODE_X]) ||
+            is_pressed[SDL_SCANCODE_BACKSPACE])
+        {
+            memmove(buffer + pos_start, buffer + pos_end, buffer_size - pos_end);
+            buffer_size -= len;
+            buffer = realloc(buffer, buffer_size);
+            selection = 0;
+        }
+    }
+    if (is_control_key_pressed && is_pressed[SDL_SCANCODE_V])
+    {
+        selection = 0;
+        int len = strlen(clipboard);
+        buffer = realloc(buffer, buffer_size + len);
+        memmove(buffer + cursor_pos + len, buffer + cursor_pos, buffer_size - cursor_pos);
+        memcpy(buffer + cursor_pos, clipboard, len);
+        buffer_size += len;
+        cursor_pos += len;
+    }
+    //
+    //@rendering
+    //
+
+    // calculate scroll
+    float dt = 1.0f / 60;
+
+    int cursor_y, cursor_x;
+    get_line_and_col_from_pos(cursor_pos, &cursor_y, &cursor_x);
+
+    int cursor_visual_y = cursor_y;
+    int cursor_visual_x = cursor_x;
+
+    float ddy = mouse_scroll_y * 10000 - scroll_dy * 4;
+    scroll_y += ddy * 0.5f * dt * dt + dt * scroll_dy;
+    scroll_dy += ddy * dt;
+
+    //TODO: make these work smooth like the mouse
+    int cursor_moved = (cursor_pos != cursor_prev_pos);
+    if (cursor_moved && cursor_visual_y * CHAR_HEIGHT >= scroll_y + draw_buffer->height)
+    {
+        scroll_y = (cursor_visual_y + 1) * CHAR_HEIGHT - draw_buffer->height;
+    }
+
+    if (cursor_moved && cursor_visual_y * CHAR_HEIGHT < scroll_y)
+    {
+        scroll_y = cursor_visual_y * CHAR_HEIGHT;
+    }
+
+    if (cursor_moved && cursor_visual_x * CHAR_WIDTH + offset_x >= scroll_x + draw_buffer->width)
+    {
+        scroll_x = (cursor_visual_x + 1) * CHAR_WIDTH + offset_x - draw_buffer->width;
+    }
+
+    if (cursor_moved && cursor_visual_x * CHAR_WIDTH < scroll_x)
+    {
+        scroll_x = cursor_visual_x * CHAR_WIDTH;
+    }
+    int line_count = 1;
+    for (int i = 0; buffer[i]; i++)
+    {
+        if (buffer[i] == '\n')
+            line_count++;
+    }
+
+    if (scroll_y < 0)
+        scroll_y = 0, scroll_dy = 0;
+    if (scroll_x < 0)
+        scroll_x = 0;
+    if (line_count * CHAR_HEIGHT <= draw_buffer->height)
+        scroll_y = 0, scroll_dy = 0;
+    else if (scroll_y + draw_buffer->height > line_count * CHAR_HEIGHT)
+        scroll_y = line_count * CHAR_HEIGHT  - draw_buffer->height;
+
+    //clear the screen
+    for (int y = 0; y < draw_buffer->height; y++)
+    {
+        for (int x = 0; x < draw_buffer->width; x++)
+            draw_buffer->pixels[y * draw_buffer->width + x] = 0;
+    }
+    //draw the text & line numbers
+    {
+        float y = offset_y;
+        float x = offset_x;
+        int line = 1;
+        //TODO: don't iterate over all lines
+        draw_text(draw_buffer, "1", 0, offset_y - scroll_y, FONT_SCALE);
+        for (int i = 0; buffer[i]; i++)
+        {
+            if (buffer[i] == '\n')
+            {
+                y += CHAR_HEIGHT;
+                x = offset_x;
+
+                line++;
+                char s[10];
+                int len = 0;
+                int n = line;
+                while (n)
+                {
+                    n /= 10;
+                    len++;
+                }
+                n = line;
+                s[len--] = 0;
+                while (n)
+                {
+                    s[len--] = n % 10 + '0';
+                    n /= 10;
+                }
+                draw_text(draw_buffer, s, 0, y - scroll_y, FONT_SCALE);continue;
+            }
+            char c = buffer[i];
+            if (c == '\t')
+                c = ' ';
+            draw_char(draw_buffer, c, x - scroll_x, y - scroll_y, FONT_SCALE);
+            x += CHAR_WIDTH;
+        }
+    }
+    // draw overlay for line numbers
+    draw_rect(draw_buffer, 0, 0, offset_x, draw_buffer->height, 0.7, 0.7, 0.7, 0.5);
+    // draw the selection
+    if (selection)
+    {
+        float x = offset_x - scroll_x;
+        float y = offset_y - scroll_y;
+        for (int i = 0; buffer[i]; i++)
+        {
+
+            if ((i >= selection_start_pos && i < selection_end_pos) ||
+                (i >= selection_end_pos && i < selection_start_pos))
+            {
+                draw_rect(draw_buffer, x, y, x + CHAR_WIDTH, y + CHAR_HEIGHT,
+                          0.1, 0.5, 0.1, 0.4);
+            }
+            if (buffer[i] == '\n')
+            {
+                y += CHAR_HEIGHT;
+                x = offset_x - scroll_x;
+            }
+            else
+                x += CHAR_WIDTH;
+        }
+    }
+    //draw the cursor
+    //if (!selection)
+    {
+        float cursor_w = 4;
+        float cursor_h = CHAR_HEIGHT;
+        int min_x = cursor_visual_x * CHAR_WIDTH  + offset_x - scroll_x;
+        int min_y = cursor_visual_y * CHAR_HEIGHT + offset_y - scroll_y;
+        draw_rect(draw_buffer, min_x, min_y, min_x + cursor_w, min_y + cursor_h,
+                  1, 0, 0, 1);
+    }
+    mouse_prev_x = mouse_x;
+    mouse_prev_y = mouse_y;
+    cursor_prev_pos = cursor_pos;
+}
+
+int main(void)
+{
+    Image back_buffer = {
+        .width = 960,
+        .height = 540,
+    };
+    int window_width = back_buffer.width;
+    int window_height = back_buffer.height;
+
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Window *window = SDL_CreateWindow("texor", 0, 1500,
+                                          window_width, window_height, SDL_WINDOW_SHOWN);
+    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
+    SDL_SetWindowMinimumSize(window, window_width, window_height);
+    //TODO: should these takes window or back_buffer width/height
+    SDL_RenderSetLogicalSize(renderer, window_width, window_height);
+    SDL_RenderSetIntegerScale(renderer, 1);
+    SDL_Texture *screen_texture = SDL_CreateTexture(renderer,
+                                                    SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING,
+                                                    back_buffer.width, back_buffer.height);
+    back_buffer.pixels = malloc(back_buffer.width * back_buffer.height * sizeof(uint32_t));
+    assert(back_buffer.pixels);
+    assert(window && renderer && screen_texture);
+
+
+    unsigned int t1 = SDL_GetTicks();
+    while (1)
+    {
+        int enter = 0, backspace = 0;
+        char input_text[16];
+        input_text[0] = 0;
+
+        SDL_Event ev;
+        memset(is_pressed, 0, sizeof(is_pressed));
+        mouse_scroll_y = 0;
+        while (SDL_PollEvent(&ev))
+        {
+            if (ev.type == SDL_QUIT)
+            {
+                return 0;
+            }
+            else if (ev.type == SDL_TEXTINPUT)
+            {
+                memcpy(input_text + strlen(input_text), ev.text.text, strlen(ev.text.text) + 1);
+            }
+            else if (ev.type == SDL_KEYDOWN || ev.type == SDL_KEYUP)
+            {
+                int is_down = (ev.type == SDL_KEYDOWN);
+
+                SDL_Keycode code = ev.key.keysym.sym;
+                if (code == SDLK_TAB)
+                    memcpy(input_text + strlen(input_text), "\t", 2);
+                if (code == SDLK_LCTRL)
+                    is_control_key_pressed = is_down;
+
+                if (code == SDLK_ESCAPE)
+                    return 0;
+                //TODO: change this into GetKeyboardState?
+                is_pressed[ev.key.keysym.scancode] = is_down;
+
+            }
+            else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP)
+            {
+                if (ev.button.button == SDL_BUTTON_LEFT)
+                    is_mouse_left_button_pressed = (ev.type == SDL_MOUSEBUTTONDOWN);
+            }
+            else if (ev.type == SDL_MOUSEWHEEL)
+            {
+                static int last = 0;
+                mouse_scroll_y = ev.wheel.y;
+            }
+
+        }
+        SDL_GetMouseState(&mouse_x, &mouse_y);
+        t1 = SDL_GetTicks();
+        update_and_render_the_editor(&back_buffer, input_text);
+        //printf("%d\n", SDL_GetTicks() - t1);
+        SDL_RenderClear(renderer);
+        SDL_UpdateTexture(screen_texture, NULL, back_buffer.pixels, window_width * 4);
+        SDL_RenderCopy(renderer, screen_texture, NULL, NULL);
+        SDL_RenderPresent(renderer);
+
+    }
+    return 0;
+}
