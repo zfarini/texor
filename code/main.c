@@ -1,17 +1,18 @@
-#include <SDL2/SDL.h>
+#include <math.h>
 #include <assert.h>
+#include <stdio.h>
+#include "SDL/SDL.h"
 #define STBI_ONLY_PNG
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
-#include <stdio.h>
-#include <math.h>
+
 #define array_length(arr) (sizeof(arr) / sizeof(*(arr)))
 
 typedef struct Image {
-	int width;
-	int height;
+    int width;
+    int height;
     int pitch;
 	uint32_t *pixels;
 } Image;
@@ -37,11 +38,11 @@ Image load_image(char *filename)
     {
         for (int x = 0; x < img.width; x++)
         {
-			uint32_t p = *pixel;
-			uint32_t r = (p >> 0)  & 0xFF;
-			uint32_t g = (p >> 8)  & 0xFF;
-			uint32_t b = (p >> 16) & 0xFF;
-			uint32_t a = (p >> 24) & 0xFF;
+            uint32_t p = *pixel;
+            uint32_t r = (p >> 0)  & 0xFF;
+            uint32_t g = (p >> 8)  & 0xFF;
+            uint32_t b = (p >> 16) & 0xFF;
+            uint32_t a = (p >> 24) & 0xFF;
             *pixel = (r << 24) | (g << 16) | (b << 8) | (a << 0);
             pixel++;
         }
@@ -87,7 +88,7 @@ int main(void)
 {
     Image back_buffer = {
         .width = 960,
-        .height = 980,
+        .height = 540,
     };
     back_buffer.pitch = back_buffer.width;
     int window_width = back_buffer.width;

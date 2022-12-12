@@ -1,9 +1,10 @@
 #define TAB_SIZE 4
 
 static const char *c_keywords[] = {"auto", "break", "case", "char", "const", "continue", "default", "do", "double",
-                           "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", 
+                           "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register",
                            "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
                            "unsigned", "void", "volatile", "while"};
+
 typedef enum Command_Type {
     Command_Enter,
     Command_Backspace,
@@ -89,7 +90,7 @@ void swap(int *x, int *y)
 
 float lerp(float a, float t, float b)
 {
-	return a + t * (b - a);
+    return a + t * (b - a);
 }
 
 int clamp(int min, int x, int max)
@@ -131,14 +132,14 @@ void draw_rect(Image *screen_buffer, int min_x, int min_y, int max_x, int max_y,
                float r, float g, float b, float a)
 {
     if (min_x < 0) min_x = 0;
-	if (min_y < 0) min_y = 0;
-	if (max_x > screen_buffer->width) max_x = screen_buffer->width;
-	if (max_y > screen_buffer->height) max_y = screen_buffer->height;
+    if (min_y < 0) min_y = 0;
+    if (max_x > screen_buffer->width) max_x = screen_buffer->width;
+    if (max_y > screen_buffer->height) max_y = screen_buffer->height;
 
     for (int y = min_y; y < max_y; y++)
-	{
-		for (int x = min_x; x < max_x; x++)
-		{
+    {
+        for (int x = min_x; x < max_x; x++)
+        {
             uint32_t p = screen_buffer->pixels[y * screen_buffer->pitch + x];
             float dr = ((p >> 24) & 0xFF) / 255.0f;
             float dg = ((p >> 16) & 0xFF) / 255.0f;
@@ -152,7 +153,7 @@ void draw_rect(Image *screen_buffer, int min_x, int min_y, int max_x, int max_y,
             ((uint32_t)(dg * 255 + 0.5f) << 16) |
             ((uint32_t)(db * 255 + 0.5f) << 8);
         }
-	}
+    }
 }
 
 void draw_rect_outline(Image *screen_buffer, int min_x, int min_y, int max_x, int max_y,
@@ -179,14 +180,14 @@ void draw_char(Image *screen_buffer, int c, int min_x, int min_y, float fr, floa
     int max_y = min_y + font_line_height;
 
     if (min_x < 0) min_x = 0;
-	if (min_y < 0) min_y = 0;
-	if (max_x > screen_buffer->width) max_x = screen_buffer->width;
-	if (max_y > screen_buffer->height) max_y = screen_buffer->height;
+    if (min_y < 0) min_y = 0;
+    if (max_x > screen_buffer->width) max_x = screen_buffer->width;
+    if (max_y > screen_buffer->height) max_y = screen_buffer->height;
 
 
     for (int y = min_y; y < max_y; y++)
-	{
-		for (int x = min_x; x < max_x; x++)
+    {
+        for (int x = min_x; x < max_x; x++)
         {
             uint8_t grey = font_bitmaps[c][(int)((y - init_min_y) * font_advance_x + (x - init_min_x))];
             float a = grey / 255.0f;
@@ -208,23 +209,23 @@ void draw_char(Image *screen_buffer, int c, int min_x, int min_y, float fr, floa
 
 void draw_text(Image *screen_buffer, char *s, int min_x, int min_y, float fr, float fg, float fb)
 {
-	float x = min_x;
-	float y = min_y;
-	for (int i = 0; s[i]; i++)
-	{
-		if (s[i] == '\n')
+    float x = min_x;
+    float y = min_y;
+    for (int i = 0; s[i]; i++)
+    {
+        if (s[i] == '\n')
         {
             y += font_line_height;
             x = min_x;
         }
-		else if (s[i] == '\t')
-		{
-			for (int j = 0; j < TAB_SIZE; j++)
-			{
-				draw_char(screen_buffer, ' ', x, y, fr, fg, fb);
+        else if (s[i] == '\t')
+        {
+            for (int j = 0; j < TAB_SIZE; j++)
+            {
+                draw_char(screen_buffer, ' ', x, y, fr, fg, fb);
                 x += font_advance_x;
-			}
-		}
+            }
+        }
         else
         {
             draw_char(screen_buffer, s[i], x, y, fr, fg, fb);
@@ -572,7 +573,7 @@ void update_buffer(Buffer *buffer, Input *input)
     }
 
     assert(buffer->cursor_pos >= 0 && buffer->cursor_pos <= buffer->size);
- 
+
 }
 
 void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
@@ -673,7 +674,7 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
                 inside_multiline_comment = 1;
             int inside_comment = inside_oneline_comment || inside_multiline_comment;
 
-            if (!inside_comment && 
+            if (!inside_comment &&
                     buffer->data[i] == '"' && (!i || buffer->data[i - 1] != '\\'))
                 string_c++;
             if (buffer->data[i] == '\n')
@@ -727,7 +728,7 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
                 int keyword_index = -1;
                 for (uint32_t k = 0; k < array_length(c_keywords); k++)
                 {
-                    if (j - i == (int)strlen(c_keywords[k]) && 
+                    if (j - i == (int)strlen(c_keywords[k]) &&
                         !memcmp(buffer->data + i, c_keywords[k], j - i))
                     {
                         keyword_index = k;
@@ -816,7 +817,7 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
         draw_text(screen_buffer, buf, screen_buffer->width - strlen(buf) * font_advance_x,
                   min_y, 1, 1, 1);
     }
-    
+
     // command bar
     {
         int min_y = screen_buffer->height - commandbar_height;
@@ -831,30 +832,35 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
 void update_and_render_the_editor(Image *screen_buffer, Input *input)
 {
     static int first_frame = 1;
-    int buffer_count = 4;
+    int buffer_count = 2;
     if (first_frame)
     {
+
         buffers[0].filename = "test";
         buffers[0].data = load_entire_file(buffers[0].filename);
         buffers[0].size = strlen(buffers[0].data) + 1;
-        buffers[0].min_x = 5; 
-        buffers[0].max_x = screen_buffer->width / 2 - 5;
+        buffers[0].min_x = 5;
+        buffers[0].max_x = screen_buffer->width - 5;
         buffers[0].min_y = 5;
         buffers[0].max_y = screen_buffer->height / 2 - 5;
 
         buffers[1].filename = "code/main.c";
         buffers[1].data = load_entire_file(buffers[1].filename);
         buffers[1].size = strlen(buffers[1].data) + 1;
+        buffers[1].min_x = buffers[0].min_x;
+        buffers[1].max_x = buffers[0].max_x;
+        buffers[1].min_y = buffers[0].max_y + 5;
+        buffers[1].max_y = screen_buffer->height - 5;;
+#if 0
         buffers[1].min_x = buffers[0].max_x + 10;
         buffers[1].max_x = screen_buffer->width - 5;
         buffers[1].min_y = buffers[0].min_y;
         buffers[1].max_y = buffers[0].max_y;
-
         buffers[2].filename = "code/stb_image.h";
         buffers[2].data = load_entire_file(buffers[2].filename);
         buffers[2].size = strlen(buffers[2].data) + 1;
         buffers[2].min_x = buffers[0].min_x;
-        buffers[2].max_x = buffers[0].max_x;
+        buffers[2].max_x = screen_buffer->width - 5;
         buffers[2].min_y = buffers[0].max_y + 10;
         buffers[2].max_y = screen_buffer->height - 5;
 
@@ -865,7 +871,7 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
         buffers[3].max_x = buffers[1].max_x;
         buffers[3].min_y = buffers[2].min_y;
         buffers[3].max_y = buffers[2].max_y;
-
+#endif
 
         stbtt_fontinfo info;
 
@@ -926,7 +932,7 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
         for (int i = 0; i < buffer_count; i++)
         {
             Buffer *buffer = &buffers[i];
-            if (input->mouse_x >= buffer->min_x && input->mouse_x < buffer->max_x && 
+            if (input->mouse_x >= buffer->min_x && input->mouse_x < buffer->max_x &&
                 input->mouse_y >= buffer->min_y && input->mouse_y < buffer->max_y)
             {
                 active_buffer = buffer;
@@ -972,7 +978,7 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
             update_buffer(&buffers[i], &buffer_input);
             draw_buffer(&img, &buffers[i], &buffer_input);
         }
-        
+
         if (buffer == active_buffer)
             draw_rect_outline(screen_buffer, buffer->min_x, buffer->min_y, buffer->max_x, buffer->max_y, 2, 1, 0, 0, 1);
         else
