@@ -12,6 +12,7 @@
 typedef struct Image {
 	int width;
 	int height;
+    int pitch;
 	uint32_t *pixels;
 } Image;
 
@@ -24,11 +25,11 @@ Image load_image(char *filename)
         printf("failed to load %s\n", filename);
         assert(0);
     }
-
     assert(n == 3 || n == 4);
     Image img;
     img.width = w;
     img.height = h;
+    img.pitch = w;
     img.pixels = (uint32_t *)pixels;//malloc(w * h * 4);
     //pixels are 0xRRGGBBAA
     uint32_t *pixel = img.pixels;
@@ -86,8 +87,9 @@ int main(void)
 {
     Image back_buffer = {
         .width = 960,
-        .height = 540,
+        .height = 980,
     };
+    back_buffer.pitch = back_buffer.width;
     int window_width = back_buffer.width;
     int window_height = back_buffer.height;
 
@@ -102,21 +104,23 @@ int main(void)
     SDL_Texture *screen_texture = SDL_CreateTexture(renderer,
                                                     SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING,
                                                     back_buffer.width, back_buffer.height);
-    back_buffer.pixels = malloc(back_buffer.width * back_buffer.height * sizeof(uint32_t));
+    back_buffer.pixels = calloc(back_buffer.width * back_buffer.height * sizeof(uint32_t), 1);
     assert(back_buffer.pixels);
     assert(window && renderer && screen_texture);
 
+    Input input = {0};
 
     unsigned int t1 = SDL_GetTicks();
     while (1)
     {
-        int enter = 0, backspace = 0;
         char input_text[16];
         input_text[0] = 0;
+        int is_pressed[512] = {0};//TODO: make this not reset and hadle typing speed?
+        input.is_pressed = is_pressed;
+        input.text = input_text;
+        input.mouse_scroll_y = 0;
 
         SDL_Event ev;
-        memset(is_pressed, 0, sizeof(is_pressed));
-        mouse_scroll_y = 0;
         while (SDL_PollEvent(&ev))
         {
             if (ev.type == SDL_QUIT)
@@ -125,7 +129,8 @@ int main(void)
             }
             else if (ev.type == SDL_TEXTINPUT)
             {
-                memcpy(input_text + strlen(input_text), ev.text.text, strlen(ev.text.text) + 1);
+                assert(strlen(ev.text.text) == 1); // this seems to always work?
+                memcpy(input.text + strlen(input.text), ev.text.text, strlen(ev.text.text) + 1);
             }
             else if (ev.type == SDL_KEYDOWN || ev.type == SDL_KEYUP)
             {
@@ -133,36 +138,36 @@ int main(void)
 
                 SDL_Keycode code = ev.key.keysym.sym;
                 if (code == SDLK_TAB && is_down)
-                    memcpy(input_text + strlen(input_text), "\t", 2);
+                    memcpy(input.text + strlen(input.text), "\t", 2);
                 if (code == SDLK_LCTRL)
-                    is_control_key_pressed = is_down;
+                    input.is_control_key_pressed = is_down;
 
-                if (code == SDLK_ESCAPE)
-                    return 0;
+               // if (code == SDLK_ESCAPE)
+                //    return 0;
                 //TODO: change this into GetKeyboardState?
-                is_pressed[ev.key.keysym.scancode] = is_down;
-
+                //TODO: this only give me one keydown in a frame
+                input.is_pressed[ev.key.keysym.scancode] = is_down;
             }
             else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP)
             {
                 if (ev.button.button == SDL_BUTTON_LEFT)
-                    is_mouse_left_button_pressed = (ev.type == SDL_MOUSEBUTTONDOWN);
+                    input.is_mouse_left_button_pressed = (ev.type == SDL_MOUSEBUTTONDOWN);
             }
             else if (ev.type == SDL_MOUSEWHEEL)
             {
-                static int last = 0;
-                mouse_scroll_y = ev.wheel.y;
+                input.mouse_scroll_y = ev.wheel.y;
             }
-
         }
-        SDL_GetMouseState(&mouse_x, &mouse_y);
+        SDL_GetMouseState(&input.mouse_x, &input.mouse_y);
         t1 = SDL_GetTicks();
-        update_and_render_the_editor(&back_buffer, input_text);
-        //printf("%d\n", SDL_GetTicks() - t1);
+        update_and_render_the_editor(&back_buffer, &input);
+        printf("%d\n", SDL_GetTicks() - t1);
         SDL_RenderClear(renderer);
         SDL_UpdateTexture(screen_texture, NULL, back_buffer.pixels, window_width * 4);
         SDL_RenderCopy(renderer, screen_texture, NULL, NULL);
         SDL_RenderPresent(renderer);
+        input.mouse_prev_x = input.mouse_x;
+        input.mouse_prev_y = input.mouse_y;
 
     }
     return 0;

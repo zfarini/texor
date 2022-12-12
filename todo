@@ -1,0 +1,32 @@
+- printf style draw_text
+- gap buffer
+- handle tabs better
+- multiple buffers + save
+- handle the order of stuff in update
+- undo
+- redo
+- vim / kakoune or maybe emacs? basics
+- smooth scrolling (see bezier curves, cubic splines)
+- window resizing
+- multiple font sizes
+- antialiasing
+- kerning
+- switch from sdl?
+- handle small font sizes- search
+- replace
+- basic parser  // propably this should be done later
+     - syntax highlighthing
+- matching braces
+- list all defintions (functions, types, ...)
+- jump to definition (also peek definition)
+- jump history
+- macro recording
+- multiple cursors?
+- basic autocomplete
+- split windows
+- auto indentation
+- snippets?
+- registers?
+- better parser
+- optimizations
+- integrated build system (with jump to errors)
