@@ -117,7 +117,6 @@ int main(void)
         char input_text[16];
         input_text[0] = 0;
         int is_pressed[512] = {0};//TODO: make this not reset and hadle typing speed?
-        input.is_pressed = is_pressed;
         input.text = input_text;
         input.mouse_scroll_y = 0;
 
@@ -147,7 +146,11 @@ int main(void)
                 //    return 0;
                 //TODO: change this into GetKeyboardState?
                 //TODO: this only give me one keydown in a frame
-                input.is_pressed[ev.key.keysym.scancode] = is_down;
+                int scancode = ev.key.keysym.scancode;
+                if (!is_down)
+                    is_pressed[scancode] = is_down;
+                else if (!input.is_pressed[scancode])
+                    is_pressed[scancode] = 1;
             }
             else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP)
             {
@@ -159,6 +162,7 @@ int main(void)
                 input.mouse_scroll_y = ev.wheel.y;
             }
         }
+        input.is_pressed = is_pressed;
         SDL_GetMouseState(&input.mouse_x, &input.mouse_y);
         t1 = SDL_GetTicks();
         update_and_render_the_editor(&back_buffer, &input);

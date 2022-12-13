@@ -1,5 +1,18 @@
 #define TAB_SIZE 4
 
+/*TODO:
+- mandatory dancing cow animation
+- define the meaning of buffer size
+- change name of view->text_min_x and use them correctly
+- make all buffer data changes into like 2 functions
+- redo
+- undo for selections?
+- simplify the code
+- make multiple views work
+- open new files, save
+- try something like vim command bar to test code reuse
+- start vim or emacs stuff
+*/
 static const char *c_keywords[] = {"auto", "break", "case", "char", "const", "continue", "default", "do", "double",
                            "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register",
                            "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
@@ -22,29 +35,54 @@ typedef struct Command {
     int s_end_pos;
 } Command;
 
+enum Mode {
+    MODE_INSERT,
+    MODE_NORMAL,
+};
+
 typedef struct Buffer {
     char *data;
     int size;
     char *filename;
     Command undo[4096];
     int undo_count;
-    int selection_start_pos; // this shouldn't be on the buffer because we might have multiple views on the same buffer
-    int selection_end_pos;
-    int selection;
-    int new_selection;
-    int cursor_pos;
-    int cursor_prev_pos;
-    float offset_x;
-    float offset_y;
+} Buffer;
+
+typedef struct View { // should this be called Window?
     float scroll_y;
     float scroll_x;
     float scroll_dy;
 
-    int min_x; //TODO: this could be from 0 to 1?
-    int min_y;
+    int selection_start_pos;
+    int selection_end_pos;
+    int selection;
+    int new_selection;
+
+    int line_numbers_width;
+
+    int left_offset;// sum of all stuff on the left?
+
+    int filebar_height;
+    int commandbar_height;
+
+    int cursor_pos;
+    int cursor_prev_pos;
+
+    int mode; // NORMAL, INSERT, VISUAL, COMMAND?
+    Buffer *text_buffer;
+    Buffer *command_buffer; // reuse the code to work with this (include undo, but not selection for example)
+    //if mode is COMMAND feed him the input
+
+    int min_x;//TODO: we don't have to store these?
     int max_x;
+    int min_y;
     int max_y;
-} Buffer;
+
+    int text_min_x;//TODO: change these name and test start using max
+    int text_min_y;
+    int text_max_x;
+    int text_max_y;
+} View;
 
 typedef struct Input {
     char *text;
@@ -68,12 +106,16 @@ static Buffer buffers[4];
 
 static char *clipboard;
 
-enum Mode {
-    MODE_INSERT,
-    MODE_NORMAL,
-};
+
+static Image test_image[8];
+static int test_image_count;
 
 static int mode = MODE_NORMAL;
+
+
+static View views[8];
+static View *active_view;
+int view_count = 2;
 
 void push_command(Buffer *buffer, Command *cmd)
 {
@@ -126,6 +168,64 @@ int get_line_count(Buffer *buffer)
     for (int i = 0; buffer->data[i]; i++)
         result += (buffer->data[i] == '\n');
     return result;
+}
+
+Image image_view(Image *image, int xoffset, int yoffset, int width, int height)
+{
+    Image result = {
+        .width = width,
+        .height = height,
+        .pitch = image->pitch,
+        .pixels = image->pixels + (yoffset * image->pitch) + xoffset,
+    };
+    return result;
+}
+
+void draw_image(Image *screen_buffer, Image *img, int min_x, int min_y, int max_x, int max_y, float a)
+{
+    if (max_x == min_x || max_y == min_y)
+        return ;
+    float start_x = min_x;
+    float start_y = min_y;
+    float xdiv = 1.0f / (max_x - min_x);
+    float ydiv = 1.0f / (max_y - min_y);
+
+    if (min_x < 0)
+        min_x = 0;
+    if (min_y < 0)
+        min_y = 0;
+    if (max_x > screen_buffer->width)
+        max_x = screen_buffer->width;
+    if (max_y > screen_buffer->height)
+        max_y = screen_buffer->height;
+    uint32_t *row = screen_buffer->pixels + min_y * screen_buffer->pitch + min_x;
+    for (int y = min_y; y < max_y; y++)
+    {
+        uint32_t *dest_pixel = (uint32_t *)row;
+        for (int x = min_x; x < max_x; x++)
+        {
+            int src_x = ((float)(x - start_x) * xdiv) * img->width;
+            int src_y = ((float)(y - start_y) * ydiv) * img->height;
+            uint32_t s = img->pixels[src_y * img->pitch + src_x];
+            uint32_t d = *dest_pixel;
+            const float one_over_255 = 1.0f / 255.0f;
+            float sr = ((s >> 24) & 0xFF) * one_over_255;
+            float sg = ((s >> 16) & 0xFF) * one_over_255;
+            float sb = ((s >> 8) & 0xFF) * one_over_255;
+            float sa = ((s >> 0) & 0xFF) * one_over_255 * a;
+
+            float dr = ((d >> 24) & 0xFF) * one_over_255;
+            float dg = ((d >> 16) & 0xFF) * one_over_255;
+            float db = ((d >> 8) & 0xFF) * one_over_255;
+
+            uint32_t r = (uint32_t)((dr + (sr - dr) * sa) * 255 + 0.5f);
+            uint32_t g = (uint32_t)((dg + (sg - dg) * sa) * 255 + 0.5f);
+            uint32_t b = (uint32_t)((db + (sb - db) * sa) * 255 + 0.5f);
+            *dest_pixel = (r << 24) | (g << 16) | (b << 8);
+            dest_pixel++;
+        }
+        row += screen_buffer->pitch;
+    }
 }
 
 void draw_rect(Image *screen_buffer, int min_x, int min_y, int max_x, int max_y,
@@ -319,10 +419,10 @@ int text_col_to_visual_col(Buffer *buffer, int line, int text_col)
     return visual_col;
 }
 
-int screen_pos_to_buffer_pos(Buffer *buffer, int screen_x, int screen_y)
+int screen_pos_to_buffer_pos(View *view, Buffer *buffer, int screen_x, int screen_y)
 {
-    int line = (screen_y + buffer->scroll_y - buffer->offset_y) / font_line_height;
-    int col = (screen_x + buffer->scroll_x - buffer->offset_x) / font_advance_x;
+    int line = (screen_y + view->scroll_y - view->text_min_y) / font_line_height;
+    int col = (screen_x + view->scroll_x - view->text_min_x) / font_advance_x;
     //decrease col by something?
     int line_start = get_pos_from_line_and_col(buffer, line, 0);
     if (line_start >= buffer->size)
@@ -331,30 +431,32 @@ int screen_pos_to_buffer_pos(Buffer *buffer, int screen_x, int screen_y)
     return get_pos_from_line_and_col(buffer, line, text_col);
 }
 
-void update_buffer(Buffer *buffer, Input *input)
+void update_view(View *view, Input *input)
 {
-    int cursor_save_pos = buffer->cursor_pos;
+    Buffer *buffer = view->text_buffer;
+
+    int cursor_save_pos = view->cursor_pos;
 
     if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_Z] && buffer->undo_count)
     {
         Command *c = &buffer->undo[buffer->undo_count - 1];
         buffer->undo_count--;
-        buffer->cursor_pos = c->c_end_pos;
+        view->cursor_pos = c->c_end_pos;
         switch (c->type)
         {
             case Command_Text:
             case Command_Enter:
             case Command_Paste:
             {
-                memmove(buffer->data + c->c_pos,  buffer->data + buffer->cursor_pos, buffer->size - buffer->cursor_pos);
-                buffer->size -= buffer->cursor_pos - c->c_pos;
+                memmove(buffer->data + c->c_pos,  buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
+                buffer->size -= view->cursor_pos - c->c_pos;
                 buffer->data = realloc(buffer->data, buffer->size);
                 break;
             }
             case Command_Backspace:
             {
                 int len = strlen(c->removed_string);
-                assert(buffer->cursor_pos == c->c_pos - len);
+                assert(view->cursor_pos == c->c_pos - len);
                 buffer->data = realloc(buffer->data, buffer->size + len);
                 memmove(buffer->data + c->c_pos, buffer->data + c->c_pos - len, buffer->size + len - c->c_pos);
                 memcpy(buffer->data + c->c_pos - len, c->removed_string, len);
@@ -378,7 +480,7 @@ void update_buffer(Buffer *buffer, Input *input)
                 break;
             }
         }
-        buffer->cursor_pos = c->c_pos;
+        view->cursor_pos = c->c_pos;
         free(c->removed_string);
         //push to redo buffer?
     }
@@ -396,35 +498,35 @@ void update_buffer(Buffer *buffer, Input *input)
         mode = MODE_NORMAL;
     if (input->is_pressed[SDL_SCANCODE_LEFT] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_H]))
     {
-        if (buffer->cursor_pos && buffer->data[buffer->cursor_pos - 1] != '\n')
-            buffer->cursor_pos--;
+        if (view->cursor_pos && buffer->data[view->cursor_pos - 1] != '\n')
+            view->cursor_pos--;
     }
     if (input->is_pressed[SDL_SCANCODE_RIGHT] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_L]))
     {
-        if (buffer->cursor_pos < buffer->size && buffer->data[buffer->cursor_pos] != '\n')
-            buffer->cursor_pos++;
+        if (view->cursor_pos < buffer->size && buffer->data[view->cursor_pos] != '\n')
+            view->cursor_pos++;
     }
     {
         int line, col;
-        get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+        get_line_and_col_from_pos(buffer, view->cursor_pos, &line, &col);
         int visual_col = text_col_to_visual_col(buffer, line, col);
         if (input->is_pressed[SDL_SCANCODE_UP] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_K]))
         {
             int c = visual_col_to_text_col(buffer, line - 1, visual_col);
-            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line - 1, c);
+            view->cursor_pos = get_pos_from_line_and_col(buffer, line - 1, c);
         }
         if (input->is_pressed[SDL_SCANCODE_DOWN] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_J]))
         {
             int c = visual_col_to_text_col(buffer, line + 1, visual_col);
-            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line + 1, c);
+            view->cursor_pos = get_pos_from_line_and_col(buffer, line + 1, c);
         }
     }
     if (input->is_pressed[SDL_SCANCODE_RETURN])
     {
-        int c_pos = buffer->cursor_pos;
+        int c_pos = view->cursor_pos;
 
         int line, col;
-        get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+        get_line_and_col_from_pos(buffer, view->cursor_pos, &line, &col);
 
         int tab_count = 0;
         int line_start = get_pos_from_line_and_col(buffer, line, 0);
@@ -432,33 +534,33 @@ void update_buffer(Buffer *buffer, Input *input)
         for (int i = line_start; buffer->data[i] != '\n' && buffer->data[i] == '\t'; i++)
             tab_count++;
         buffer->data = realloc(buffer->data, buffer->size + 1 + tab_count);
-        memmove(buffer->data + buffer->cursor_pos + 1 + tab_count, buffer->data + buffer->cursor_pos, buffer->size - buffer->cursor_pos);
-        buffer->data[buffer->cursor_pos] = '\n';
-        for (int j = buffer->cursor_pos + 1; j - buffer->cursor_pos - 1 < tab_count; j++)
+        memmove(buffer->data + view->cursor_pos + 1 + tab_count, buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
+        buffer->data[view->cursor_pos] = '\n';
+        for (int j = view->cursor_pos + 1; j - view->cursor_pos - 1 < tab_count; j++)
             buffer->data[j] = '\t';
-        buffer->cursor_pos += tab_count + 1;
+        view->cursor_pos += tab_count + 1;
         buffer->size += tab_count + 1;
 
         push_command(buffer, &(Command){
                          .type = Command_Enter,
                          .c_pos = c_pos,
-                         .c_end_pos = buffer->cursor_pos,
+                         .c_end_pos = view->cursor_pos,
                      });
     }
-    if (input->is_pressed[SDL_SCANCODE_BACKSPACE] && !buffer->selection)
+    if (input->is_pressed[SDL_SCANCODE_BACKSPACE] && !view->selection)
     {
-        if (buffer->cursor_pos)
+        if (view->cursor_pos)
         {
             char *removed_string = malloc(2);
-            removed_string[0] = buffer->data[buffer->cursor_pos - 1];
+            removed_string[0] = buffer->data[view->cursor_pos - 1];
             removed_string[1] = 0;
             push_command(buffer, &(Command){
                              .type = Command_Backspace,
-                             .c_pos = buffer->cursor_pos,
-                             .c_end_pos = buffer->cursor_pos - 1,
+                             .c_pos = view->cursor_pos,
+                             .c_end_pos = view->cursor_pos - 1,
                              .removed_string = removed_string,
-                         });buffer->cursor_pos--;
-            memmove(buffer->data + buffer->cursor_pos, buffer->data + buffer->cursor_pos + 1, buffer->size - buffer->cursor_pos - 1);
+                         });view->cursor_pos--;
+            memmove(buffer->data + view->cursor_pos, buffer->data + view->cursor_pos + 1, buffer->size - view->cursor_pos - 1);
             buffer->size--;
         }
     }
@@ -466,57 +568,56 @@ void update_buffer(Buffer *buffer, Input *input)
     if (input->text[0] && mode == MODE_INSERT)
     {
         int text_len = strlen(input->text);
-
         for (int i = 0; i < text_len; i++)
         {
             push_command(buffer, &(Command){
                              .type = Command_Text,
-                             .c_pos = buffer->cursor_pos + i,
-                             .c_end_pos = buffer->cursor_pos + i + 1,
+                             .c_pos = view->cursor_pos + i,
+                             .c_end_pos = view->cursor_pos + i + 1,
                          });
         }
         buffer->data = realloc(buffer->data, buffer->size + text_len);
-        memmove(buffer->data + buffer->cursor_pos + text_len, buffer->data + buffer->cursor_pos, buffer->size - buffer->cursor_pos);
-        memcpy(buffer->data + buffer->cursor_pos, input->text, text_len);
+        memmove(buffer->data + view->cursor_pos + text_len, buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
+        memcpy(buffer->data + view->cursor_pos, input->text, text_len);
         buffer->size += text_len;
-        buffer->cursor_pos += text_len;
+        view->cursor_pos += text_len;
 
     }
-    if (cursor_save_pos != buffer->cursor_pos)
-        buffer->selection = 0;
+    if (cursor_save_pos != view->cursor_pos)
+        view->selection = 0;
     // mouse click & selection
-    int mouse_pos = screen_pos_to_buffer_pos(buffer, input->mouse_x, input->mouse_y);
-    int mouse_prev_pos = screen_pos_to_buffer_pos(buffer, input->mouse_prev_x, input->mouse_prev_y);
+    int mouse_pos = screen_pos_to_buffer_pos(view, buffer, input->mouse_x, input->mouse_y);
+    int mouse_prev_pos = screen_pos_to_buffer_pos(view, buffer, input->mouse_prev_x, input->mouse_prev_y);
 
-    if (input->is_mouse_left_button_pressed)//&& !buffer->selection)
+    if (input->is_mouse_left_button_pressed)//&& !view->selection)
     {
-        buffer->cursor_pos = mouse_pos;
+        view->cursor_pos = mouse_pos;
     }
     int mouse_moved = (input->mouse_x != input->mouse_prev_x) || (input->mouse_y != input->mouse_prev_y);
     if (input->is_mouse_left_button_pressed && mouse_moved)
     {
-        if (!buffer->selection || buffer->new_selection)
+        if (!view->selection || view->new_selection)
         {
-            buffer->new_selection = 0;
-            buffer->selection = 1;
-            buffer->selection_start_pos = mouse_prev_pos;
+            view->new_selection = 0;
+            view->selection = 1;
+            view->selection_start_pos = mouse_prev_pos;
         }
-        buffer->selection_end_pos = mouse_pos;
+        view->selection_end_pos = mouse_pos;
     }
-    if (buffer->new_selection && input->is_mouse_left_button_pressed)
-        buffer->selection = 0;
+    if (view->new_selection && input->is_mouse_left_button_pressed)
+        view->selection = 0;
     if (!input->is_mouse_left_button_pressed)
-        buffer->new_selection = 1;
+        view->new_selection = 1;
     if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_A])
     {
-        buffer->selection = 1;
-        buffer->selection_start_pos = 0;
-        buffer->selection_end_pos = buffer->size - 1;
+        view->selection = 1;
+        view->selection_start_pos = 0;
+        view->selection_end_pos = buffer->size - 1;
     }
-    if (buffer->selection)
+    if (view->selection)
     {
-        int pos_start = buffer->selection_start_pos;
-        int pos_end = buffer->selection_end_pos;
+        int pos_start = view->selection_start_pos;
+        int pos_end = view->selection_end_pos;
         if (pos_start > pos_end)
             swap(&pos_start, &pos_end);
         int len = pos_end - pos_start;
@@ -532,7 +633,7 @@ void update_buffer(Buffer *buffer, Input *input)
         if ((input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_X]) ||
             input->is_pressed[SDL_SCANCODE_BACKSPACE])
         {
-            int c_pos = buffer->cursor_pos;
+            int c_pos = view->cursor_pos;
 
             char *removed_string = malloc(len + 1);
             removed_string[len] = 0;
@@ -541,14 +642,14 @@ void update_buffer(Buffer *buffer, Input *input)
             memmove(buffer->data + pos_start, buffer->data + pos_end, buffer->size - pos_end);
             buffer->size -= len;
             buffer->data = realloc(buffer->data, buffer->size);
-            buffer->selection = 0;
-            buffer->cursor_pos = pos_start;
-            //TODO: should we use buffer->selection range here?
+            view->selection = 0;
+            view->cursor_pos = pos_start;
+            //TODO: should we use view->selection range here?
 
             push_command(buffer, &(Command){
                              .type = Command_Cut,
                              .c_pos = c_pos,
-                             .c_end_pos = buffer->cursor_pos,
+                             .c_end_pos = view->cursor_pos,
                              .s_pos = pos_start,
                              .s_end_pos = pos_end,
                              .removed_string = removed_string,
@@ -557,109 +658,123 @@ void update_buffer(Buffer *buffer, Input *input)
     }
     if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_V])
     {
-        int c_pos = buffer->cursor_pos;
-        buffer->selection = 0;
+        int c_pos = view->cursor_pos;
+        view->selection = 0;
         int len = strlen(clipboard);
         buffer->data = realloc(buffer->data, buffer->size + len);
-        memmove(buffer->data + buffer->cursor_pos + len, buffer->data + buffer->cursor_pos, buffer->size - buffer->cursor_pos);
-        memcpy(buffer->data + buffer->cursor_pos, clipboard, len);
+        memmove(buffer->data + view->cursor_pos + len, buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
+        memcpy(buffer->data + view->cursor_pos, clipboard, len);
         buffer->size += len;
-        buffer->cursor_pos += len;
+        view->cursor_pos += len;
         push_command(buffer, &(Command){
                          .type = Command_Paste,
                          .c_pos = c_pos,
-                         .c_end_pos = buffer->cursor_pos,
+                         .c_end_pos = view->cursor_pos,
                      });
     }
 
-    assert(buffer->cursor_pos >= 0 && buffer->cursor_pos <= buffer->size);
+    assert(view->cursor_pos >= 0 && view->cursor_pos <= buffer->size);
 
 }
 
-void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
+void draw_view(Image *screen_buffer, View *view, Input *input)
 {
+    Buffer *buffer = view->text_buffer;
+
+    int line_count = get_line_count(buffer);
+    view->filebar_height = font_line_height;
+    view->commandbar_height = font_line_height;
+    view->line_numbers_width = uint_len(line_count) * font_advance_x;
+    view->text_min_x = view->line_numbers_width + 10;
+    view->text_max_x = screen_buffer->width;
+    view->text_min_y = 0;
+    view->text_max_y = screen_buffer->height - view->filebar_height - view->commandbar_height;
     // calculate scroll
     float dt = 1.0f / 60;
 
     int cursor_y, cursor_x;
-    get_line_and_col_from_pos(buffer, buffer->cursor_pos, &cursor_y, &cursor_x);
+    get_line_and_col_from_pos(buffer, view->cursor_pos, &cursor_y, &cursor_x);
 
     int cursor_visual_y = cursor_y;
     int cursor_visual_x = cursor_x;
-    for (int i = buffer->cursor_pos - 1; i >= 0 && buffer->data[i] != '\n'; i--)
+    for (int i = view->cursor_pos - 1; i >= 0 && buffer->data[i] != '\n'; i--)
     {
         if (buffer->data[i] == '\t')
             cursor_visual_x += TAB_SIZE - 1;
     }
 
-    float ddy = input->mouse_scroll_y * 10000 - buffer->scroll_dy * 4;
-    buffer->scroll_y += ddy * 0.5f * dt * dt + dt * buffer->scroll_dy;
-    buffer->scroll_dy += ddy * dt;
+    float ddy = input->mouse_scroll_y * 10000 - view->scroll_dy * 4;
+    view->scroll_y += ddy * 0.5f * dt * dt + dt * view->scroll_dy;
+    view->scroll_dy += ddy * dt;
 
     //TODO: make these work smooth like the mouse
+    int cursor_moved = (view->cursor_pos != view->cursor_prev_pos);
 
-    int filebar_height = font_line_height;
-    int commandbar_height = font_line_height;
-    int bottom_height = filebar_height + commandbar_height;
-
-    int max_height = screen_buffer->height - bottom_height;
-    int cursor_moved = (buffer->cursor_pos != buffer->cursor_prev_pos);
-
-    if (cursor_moved && cursor_visual_y * font_line_height >= buffer->scroll_y + max_height)
+    if (cursor_moved && cursor_visual_y * font_line_height >= view->scroll_y + view->text_max_y)
     {
-        buffer->scroll_y = (cursor_visual_y + 1) * font_line_height - max_height;
+        view->scroll_y = (cursor_visual_y + 1) * font_line_height - view->text_max_y;
     }
 
-    if (cursor_moved && cursor_visual_y * font_line_height < buffer->scroll_y)
+    if (cursor_moved && cursor_visual_y * font_line_height < view->scroll_y)
     {
-        buffer->scroll_y = cursor_visual_y * font_line_height;
+        view->scroll_y = cursor_visual_y * font_line_height;
     }
 
-    if (cursor_moved && cursor_visual_x * font_advance_x + buffer->offset_x >= buffer->scroll_x + screen_buffer->width)
+    if (cursor_moved && cursor_visual_x * font_advance_x + view->text_min_x >= view->scroll_x + screen_buffer->width)
     {
-        buffer->scroll_x = (cursor_visual_x + 1) * font_advance_x + buffer->offset_x - screen_buffer->width;
+        view->scroll_x = (cursor_visual_x + 1) * font_advance_x + view->text_min_x - screen_buffer->width;
     }
 
-    if (cursor_moved && cursor_visual_x * font_advance_x < buffer->scroll_x)
+    if (cursor_moved && cursor_visual_x * font_advance_x < view->scroll_x)
     {
-        buffer->scroll_x = cursor_visual_x * font_advance_x;
+        view->scroll_x = cursor_visual_x * font_advance_x;
     }
-    int line_count = get_line_count(buffer);
 
-    buffer->offset_x = uint_len(line_count) * font_advance_x + 10;
-    if (buffer->scroll_y < 0)
-        buffer->scroll_y = 0, buffer->scroll_dy = 0;
-    if (buffer->scroll_x < 0)
-        buffer->scroll_x = 0;
-    if (line_count * font_line_height <= max_height)
-        buffer->scroll_y = 0, buffer->scroll_dy = 0;
-    else if (buffer->scroll_y + max_height > line_count * font_line_height)
-        buffer->scroll_y = line_count * font_line_height  - max_height;
+    if (view->scroll_y < 0)
+        view->scroll_y = 0, view->scroll_dy = 0;
+    if (view->scroll_x < 0)
+        view->scroll_x = 0;
+    if (line_count * font_line_height <= view->text_max_y)
+        view->scroll_y = 0, view->scroll_dy = 0;
+    else if (view->scroll_y + view->text_max_y > line_count * font_line_height)
+        view->scroll_y = line_count * font_line_height  - view->text_max_y;
 
     //clear the screen
     for (int y = 0; y < screen_buffer->height; y++)
     {
         for (int x = 0; x < screen_buffer->width; x++)
         {
-            screen_buffer->pixels[y * screen_buffer->pitch + x] = 0x22;
+            screen_buffer->pixels[y * screen_buffer->pitch + x] = 0x22222200;
         }
     }
+
+
     //draw the cursor
-    //if (!buffer->selection)
+    //if (!view->selection)
     {
         float cursor_w = font_advance_x;
         float cursor_h = font_line_height;
-        int min_x = cursor_visual_x * font_advance_x  + buffer->offset_x - buffer->scroll_x;
-        int min_y = cursor_visual_y * font_line_height + buffer->offset_y - buffer->scroll_y;
+        int min_x = cursor_visual_x * font_advance_x  + view->text_min_x - view->scroll_x;
+        int min_y = cursor_visual_y * font_line_height + view->text_min_y - view->scroll_y;
+
         float r = 1, g = 0.5, b = 0;
-        if (mode == MODE_INSERT)
-            r = 0.1, g = 0.7, b = 0.1;
+
+        //if (mode == MODE_INSERT)
+        static float time = 0;
+        float t = (sinf(time * 2) + 1) * 0.5f;
+        t *= t * t;
+
+        time += dt;
+        r = 0.1, g = 0.7, b = 0.1;
+        // r = lerp(0, t, r);
+        // g = lerp(0, t, g);
+        // b = lerp(0, t, b);
         draw_rect(screen_buffer, min_x, min_y, min_x + cursor_w, min_y + cursor_h,
-                  r, g, b, 1);
+                  r, g, b, 1 - t);
     }//draw the text
     {
-        float y = buffer->offset_y - buffer->scroll_y;
-        float x = buffer->offset_x - buffer->scroll_x;
+        float y = view->text_min_y - view->scroll_y;
+        float x = view->text_min_x - view->scroll_x;
         int string_c = 0;
         int inside_oneline_comment = 0;
         int inside_multiline_comment = 0;
@@ -680,7 +795,7 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
             if (buffer->data[i] == '\n')
             {
                 y += font_line_height;
-                x = buffer->offset_x - buffer->scroll_x;
+                x = view->text_min_x - view->scroll_x;
                 inside_oneline_comment = 0;
                 i++;
             }
@@ -755,29 +870,29 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
     }
     //draw line numbers
     {
-        draw_rect(screen_buffer, 0, 0, buffer->offset_x, max_height, 0, 0, 0, 1);
+        draw_rect(screen_buffer, 0, 0, view->text_min_x, view->text_max_y, 0, 0, 0, 1);
         int line_count = get_line_count(buffer);
         for (int line = 1; line <= line_count; line++)
         {
             char s[10];
             sprintf(s, "%d", line);
             float y = (line - 1) * font_line_height;
-            draw_text(screen_buffer, s, 0, y - buffer->scroll_y, 1, 1, 1);
+            draw_text(screen_buffer, s, 0, y - view->scroll_y, 1, 1, 1);
         }
 
     }
     // draw overlay for line numbers
-    draw_rect(screen_buffer, 0, 0, buffer->offset_x, screen_buffer->height, 0.7, 0.7, 0.7, 0.5);
-    // draw the buffer->selection
-    if (buffer->selection)
+    draw_rect(screen_buffer, 0, 0, view->text_min_x, screen_buffer->height, 0.7, 0.7, 0.7, 0.5);
+    // draw the view->selection
+    if (view->selection)
     {
-        float x = buffer->offset_x - buffer->scroll_x;
-        float y = buffer->offset_y - buffer->scroll_y;
+        float x = view->text_min_x - view->scroll_x;
+        float y = view->text_min_y - view->scroll_y;
         for (int i = 0; buffer->data[i]; i++)
         {
 
-            if ((i >= buffer->selection_start_pos && i < buffer->selection_end_pos) ||
-                (i >= buffer->selection_end_pos && i < buffer->selection_start_pos))
+            if ((i >= view->selection_start_pos && i < view->selection_end_pos) ||
+                (i >= view->selection_end_pos && i < view->selection_start_pos))
             {
                 int max_x = x + font_advance_x;
                 if (buffer->data[i] == '\t')
@@ -788,7 +903,7 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
             if (buffer->data[i] == '\n')
             {
                 y += font_line_height;
-                x = buffer->offset_x - buffer->scroll_x;
+                x = view->text_min_x - view->scroll_x;
             }
             else
             {
@@ -801,17 +916,17 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
     }
     // file status
     {
-        int min_y = screen_buffer->height - bottom_height;
+        int min_y = view->text_max_y;
         draw_rect(screen_buffer, 0, min_y,
-                  screen_buffer->width, min_y + filebar_height, 0.2, 0.3, 0.3, 1);
+                  screen_buffer->width, min_y + view->filebar_height, 0.2, 0.3, 0.3, 1);
         char buf[256];
         sprintf(buf, "%s", buffer->filename);
         draw_text(screen_buffer, buf, 0, min_y, 1, 1, 1);
 
         int line, col;
-        get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+        get_line_and_col_from_pos(buffer, view->cursor_pos, &line, &col);
         int line_count = get_line_count(buffer);
-        int scroll_percent = ((float)(buffer->scroll_y) / (line_count * font_line_height)) * 100;
+        int scroll_percent = ((float)(view->scroll_y) / (line_count * font_line_height)) * 100;
         sprintf(buf, "%d,%d    %d%%\n", line + 1, col + 1, scroll_percent);
 
         draw_text(screen_buffer, buf, screen_buffer->width - strlen(buf) * font_advance_x,
@@ -820,37 +935,55 @@ void draw_buffer(Image *screen_buffer, Buffer *buffer, Input *input)
 
     // command bar
     {
-        int min_y = screen_buffer->height - commandbar_height;
-        draw_rect(screen_buffer, 0, min_y, screen_buffer->width, min_y + commandbar_height,
+        int min_y = screen_buffer->height - view->commandbar_height;
+        draw_rect(screen_buffer, 0, min_y, screen_buffer->width, min_y + view->commandbar_height,
                   0.1, 0.1, 0.1, 1);
         //draw_text(screen_buffer, "hello test ::", 0, min_y, 1, 0, 0);
     }
-    buffer->cursor_prev_pos = buffer->cursor_pos;
-}
+    if (view == active_view)
+    {
 
+        int w = 64;
+        int h = 64;
+        int min_x = screen_buffer->width - w - 10 - view->scroll_x;
+        int min_y = view->text_min_y - view->scroll_y;
+        int max_x = min_x + w;
+        int max_y = min_y + h;
+        static int frame = 0;
+        draw_image(screen_buffer, &test_image[(frame / 8) % test_image_count], min_x, min_y, max_x, max_y, 0.5);
+        frame++;
+    }
+    view->cursor_prev_pos = view->cursor_pos;
+}
 
 void update_and_render_the_editor(Image *screen_buffer, Input *input)
 {
     static int first_frame = 1;
-    int buffer_count = 2;
+
     if (first_frame)
     {
-
         buffers[0].filename = "test";
         buffers[0].data = load_entire_file(buffers[0].filename);
         buffers[0].size = strlen(buffers[0].data) + 1;
-        buffers[0].min_x = 5;
-        buffers[0].max_x = screen_buffer->width - 5;
-        buffers[0].min_y = 5;
-        buffers[0].max_y = screen_buffer->height / 2 - 5;
+
 
         buffers[1].filename = "code/main.c";
         buffers[1].data = load_entire_file(buffers[1].filename);
         buffers[1].size = strlen(buffers[1].data) + 1;
-        buffers[1].min_x = buffers[0].min_x;
-        buffers[1].max_x = buffers[0].max_x;
-        buffers[1].min_y = buffers[0].max_y + 5;
-        buffers[1].max_y = screen_buffer->height - 5;;
+
+        views[0].text_buffer = &buffers[0];
+        views[0].min_x = 40;
+        views[0].max_x = screen_buffer->width - 5;
+        views[0].min_y = 5;
+        views[0].max_y = screen_buffer->height / 2 - 5;
+
+        views[1].text_buffer = &buffers[0];
+        views[1].min_x = views[0].min_x;
+        views[1].max_x = views[0].max_x;
+        views[1].min_y = views[0].max_y + 10;
+        views[1].max_y = screen_buffer->height - 5;
+
+
 #if 0
         buffers[1].min_x = buffers[0].max_x + 10;
         buffers[1].max_x = screen_buffer->width - 5;
@@ -872,7 +1005,15 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
         buffers[3].min_y = buffers[2].min_y;
         buffers[3].max_y = buffers[2].max_y;
 #endif
-
+        Image mario_image = load_image("Mario.png");
+        // for (int j = 0; j < 3; j++)
+        // {
+        //         game_state->mario_run[i][1][j] = image_view(&mario_image, 32 * (j + 1), 32 * i, 32, 32 + 32 * i);
+        //         game_state->mario_run[i][0][j] = image_flip_by_x(&game_state->mario_run[i][1][j]);
+        // }
+        test_image_count = 3;
+        for (int j = 0; j < 3; j++)
+            test_image[j] = image_view(&mario_image, 32 * (j + 1), 32, 32, 64);
         stbtt_fontinfo info;
 
         long size;
@@ -925,63 +1066,76 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
         first_frame = 0;
     }
 
-    int mouse_moved = (input->mouse_x != input->mouse_prev_x) || (input->mouse_y != input->mouse_prev_y);
-
-    if (input->is_mouse_left_button_pressed && (!active_buffer || !active_buffer->selection))
+#if 1
+    if (input->is_mouse_left_button_pressed && (!active_buffer || !active_view->selection))
     {
-        for (int i = 0; i < buffer_count; i++)
+        for (int i = 0; i < view_count; i++)
         {
-            Buffer *buffer = &buffers[i];
-            if (input->mouse_x >= buffer->min_x && input->mouse_x < buffer->max_x &&
-                input->mouse_y >= buffer->min_y && input->mouse_y < buffer->max_y)
+            View *view = &views[i];
+            if (input->mouse_x >= view->min_x && input->mouse_x < view->max_x &&
+                input->mouse_y >= view->min_y && input->mouse_y < view->max_y)
             {
-                active_buffer = buffer;
+                active_view = view;
                 break;
             }
         }
     }
+#endif
     //memset(screen_buffer->pixels, 0, screen_buffer->pitch * screen_buffer->height * 4);
-    for (int i = 0; i < buffer_count; i++)
+
+
+    for (int i = 0; i < view_count; i++)
     {
-        Buffer *buffer = &buffers[i];
-        int buffer_mouse_x = clamp(0, input->mouse_x - buffer->min_x, buffer->max_x);
-        int buffer_mouse_y = clamp(0, input->mouse_y - buffer->min_y, buffer->max_y);
-        int buffer_mouse_prev_x = clamp(0, input->mouse_prev_x - buffer->min_x, buffer->max_x);
-        int buffer_mouse_prev_y = clamp(0, input->mouse_prev_y - buffer->min_y, buffer->max_y);
+        View *view = &views[i];
 
         Image img;
-        img.width = buffer->max_x - buffer->min_x;
-        img.height = buffer->max_y - buffer->min_y;
-        img.pixels = screen_buffer->pixels + buffer->min_y * screen_buffer->pitch + buffer->min_x;
+        img.width = view->max_x - view->min_x;
+        img.height = view->max_y - view->min_y;
+        img.pixels = screen_buffer->pixels + view->min_y * screen_buffer->pitch + view->min_x;
         img.pitch = screen_buffer->pitch;
-        if (buffer == active_buffer)
-        {
-            Input buffer_input = *input;
-            buffer_input.mouse_x = buffer_mouse_x;
-            buffer_input.mouse_y = buffer_mouse_y;
-            buffer_input.mouse_prev_x = buffer_mouse_prev_x;
-            buffer_input.mouse_prev_y = buffer_mouse_prev_y;
-            update_buffer(&buffers[i], &buffer_input);
-            draw_buffer(&img, &buffers[i], &buffer_input);
-        }
-        else
-        {
-            int is_pressed[512] = {0};
-            Input buffer_input = {};
-            buffer_input.text = "";
-            buffer_input.mouse_x = buffer_mouse_x;
-            buffer_input.mouse_y = buffer_mouse_y;
-            buffer_input.mouse_prev_x = buffer_mouse_prev_x;
-            buffer_input.mouse_prev_y = buffer_mouse_prev_y;
-            buffer_input.is_pressed = is_pressed;
-            buffer_input.dt = input->dt;
-            update_buffer(&buffers[i], &buffer_input);
-            draw_buffer(&img, &buffers[i], &buffer_input);
-        }
 
-        if (buffer == active_buffer)
-            draw_rect_outline(screen_buffer, buffer->min_x, buffer->min_y, buffer->max_x, buffer->max_y, 2, 1, 0, 0, 1);
+        Input view_input = {0};
+        int is_pressed[512] = {0};
+
+        if (view == active_view)
+        {
+            view_input = *input;
+
+        }
         else
-            draw_rect_outline(screen_buffer, buffer->min_x, buffer->min_y, buffer->max_x, buffer->max_y, 2, 0.5, 0.5, 0.5, 1);
+        {
+            view->selection = 0;
+            view->new_selection = 0;
+            view_input.text = "";
+            view_input.is_pressed = is_pressed;
+        }
+        view_input.dt = input->dt;
+        view_input.mouse_x = clamp(0, input->mouse_x - view->min_x, view->max_x);
+        view_input.mouse_y = clamp(0, input->mouse_y - view->min_y, view->max_y);
+        view_input.mouse_prev_x = clamp(0, input->mouse_prev_x - view->min_x, view->max_x);
+        view_input.mouse_prev_y = clamp(0, input->mouse_prev_y - view->min_y, view->max_y);
+        if (view != active_view && input->is_pressed[SDL_SCANCODE_P])
+            printf("cursor before: %d\n", view->cursor_pos);
+        update_view(view, &view_input);
+        draw_view(&img, view, &view_input);
+        if (view != active_view && input->is_pressed[SDL_SCANCODE_P])
+            printf("cursor after: %d\n", view->cursor_pos);
+        if (view == active_view)
+            draw_rect_outline(screen_buffer, view->min_x, view->min_y, view->max_x, view->max_y, 2, 1, 0, 0, 1);
+        else
+            draw_rect_outline(screen_buffer, view->min_x, view->min_y, view->max_x, view->max_y, 2, 0.5, 0.5, 0.5, 1);
+        for (int j = 0; j < view_count; j++)
+        {
+            View *v = &views[j];
+            if (j != i && v->text_buffer == view->text_buffer)
+            {
+                v->text_buffer->data = view->text_buffer->data;
+                if (v->cursor_pos > v->text_buffer->size)
+                {
+                    v->cursor_pos = v->text_buffer->size;
+                    printf("moving....\n");
+                }
+            }
+        }
     }
 }
