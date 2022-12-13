@@ -1,14 +1,8 @@
 #define TAB_SIZE 4
-
 /*TODO:
-- mandatory dancing cow animation
-- define the meaning of buffer size
 - change name of view->text_min_x and use them correctly
-- make all buffer data changes into like 2 functions
-- redo
 - undo for selections?
 - simplify the code
-- make multiple views work
 - open new files, save
 - try something like vim command bar to test code reuse
 - start vim or emacs stuff
@@ -19,20 +13,28 @@ static const char *c_keywords[] = {"auto", "break", "case", "char", "const", "co
                            "unsigned", "void", "volatile", "while"};
 
 typedef enum Command_Type {
-    Command_Enter,
-    Command_Backspace,
-    Command_Text,
-    Command_Cut,
-    Command_Paste,
+    Command_Insert = 1,
+    Command_Erase,
 } Command_Type;
 
 typedef struct Command {
     Command_Type type;
-    int c_pos; // cursor position before executing the command
-    int c_end_pos;
-    char *removed_string;
-    int s_pos;//selection position
-    int s_end_pos;
+    int insertion_pos;
+    char *inserted_text;
+    int inserted_text_len;
+
+    char *erased_text;
+    int erased_text_len;
+
+    int erase_range_start;
+    int erase_range_end;
+
+    int cursor_pos_before;
+    int cursor_pos_after;
+    
+    int selection;
+    int selection_start_pos;
+    int selection_end_pos;
 } Command;
 
 enum Mode {
@@ -42,10 +44,12 @@ enum Mode {
 
 typedef struct Buffer {
     char *data;
-    int size;
+    int size; // this includes \0
     char *filename;
-    Command undo[4096];
+    Command undo[4096]; // should this be here or on the view?
+    Command redo[4096];
     int undo_count;
+    int redo_count;
 } Buffer;
 
 typedef struct View { // should this be called Window?
@@ -107,21 +111,15 @@ static Buffer buffers[4];
 static char *clipboard;
 
 
-static Image test_image[8];
+static Image test_image[64];
 static int test_image_count;
 
-static int mode = MODE_NORMAL;
+//static int mode = MODE_NORMAL;
 
 
 static View views[8];
 static View *active_view;
-int view_count = 2;
-
-void push_command(Buffer *buffer, Command *cmd)
-{
-    buffer->undo[buffer->undo_count] = *cmd;
-    buffer->undo_count++;
-}
+int view_count = 1;
 
 void swap(int *x, int *y)
 {
@@ -431,91 +429,112 @@ int screen_pos_to_buffer_pos(View *view, Buffer *buffer, int screen_x, int scree
     return get_pos_from_line_and_col(buffer, line, text_col);
 }
 
+void buffer_insert_at(Buffer *buffer, int pos, char *s, int len)
+{
+    buffer->data = realloc(buffer->data, buffer->size + len);
+    memmove(buffer->data + pos + len, buffer->data + pos, buffer->size - pos);
+    memcpy(buffer->data + pos, s, len);
+    buffer->size += len;
+}
+
+void buffer_erase_range(Buffer *buffer, int start, int end) // end is included
+{
+    assert(start <= end);
+    memmove(buffer->data + start, buffer->data + end + 1, buffer->size - end - 1);
+    buffer->size -= end - start + 1;
+    buffer->data = realloc(buffer->data, buffer->size);// we don't have to do this?
+}
+
+void do_command(View *view, Command *command)
+{
+    Buffer *buffer = view->text_buffer;
+    Command *c = &buffer->undo[buffer->undo_count];
+    *c = *command;
+    c->selection = view->selection;
+    c->selection_start_pos = view->selection_start_pos;
+    c->selection_end_pos = view->selection_end_pos;
+    buffer->undo_count++;
+    if (c->erase_range_start > c->erase_range_end)
+        swap(&c->erase_range_start, &c->erase_range_end);
+
+    c->cursor_pos_before = view->cursor_pos;
+    if (c->type == Command_Insert)
+    {
+        char *new = malloc(c->inserted_text_len + 1);
+        memcpy(new, c->inserted_text, c->inserted_text_len);
+        new[c->inserted_text_len] = 0;
+        c->inserted_text = new;
+        buffer_insert_at(buffer, c->insertion_pos, c->inserted_text,
+                c->inserted_text_len);
+    }
+    else if (c->type == Command_Erase)
+    {
+        int len = c->erase_range_end - c->erase_range_start + 1;
+        c->erased_text = malloc(len + 1);
+        c->erased_text_len = len;
+        c->erased_text[len] = 0;
+        assert(c->erase_range_start + len - 1 < buffer->size);
+        memcpy(c->erased_text, buffer->data + c->erase_range_start, len);
+        buffer_erase_range(buffer, c->erase_range_start, c->erase_range_end);
+    }
+    else
+        assert(0);
+    view->cursor_pos = c->cursor_pos_after;
+}
+
 void update_view(View *view, Input *input)
 {
     Buffer *buffer = view->text_buffer;
-
+    assert(view->cursor_pos >= 0 && view->cursor_pos < buffer->size);
     int cursor_save_pos = view->cursor_pos;
-
     if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_Z] && buffer->undo_count)
     {
         Command *c = &buffer->undo[buffer->undo_count - 1];
         buffer->undo_count--;
-        view->cursor_pos = c->c_end_pos;
-        switch (c->type)
+        buffer->redo[buffer->redo_count] = *c;
+        buffer->redo_count++;
+        view->selection = c->selection;
+        view->selection_start_pos = c->selection_start_pos;
+        view->selection_end_pos = c->selection_end_pos;
+        if (c->type == Command_Insert)
         {
-            case Command_Text:
-            case Command_Enter:
-            case Command_Paste:
-            {
-                memmove(buffer->data + c->c_pos,  buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
-                buffer->size -= view->cursor_pos - c->c_pos;
-                buffer->data = realloc(buffer->data, buffer->size);
-                break;
-            }
-            case Command_Backspace:
-            {
-                int len = strlen(c->removed_string);
-                assert(view->cursor_pos == c->c_pos - len);
-                buffer->data = realloc(buffer->data, buffer->size + len);
-                memmove(buffer->data + c->c_pos, buffer->data + c->c_pos - len, buffer->size + len - c->c_pos);
-                memcpy(buffer->data + c->c_pos - len, c->removed_string, len);
-                buffer->size += len;
-                break;
-            }
-            //TODO: Cut and Backspace should be the same
-            case Command_Cut:
-            {
-                int len = strlen(c->removed_string);
-                assert(c->s_end_pos - c->s_pos == len);
-                buffer->data = realloc(buffer->data, buffer->size + len);
-                memmove(buffer->data + c->s_end_pos, buffer->data + c->s_pos, buffer->size + len - c->s_end_pos);
-                memcpy(buffer->data + c->s_pos, c->removed_string, len);
-                buffer->size += len;
-                break;
-            }
-            default:
-            {
-                assert(0);
-                break;
-            }
+            buffer_erase_range(buffer, c->insertion_pos,
+                               c->insertion_pos + c->inserted_text_len - 1);
         }
-        view->cursor_pos = c->c_pos;
-        free(c->removed_string);
-        //push to redo buffer?
+        else
+        {
+            buffer_insert_at(buffer, c->erase_range_start, c->erased_text, c->erased_text_len);
+        }
+        view->cursor_pos = c->cursor_pos_before;
     }
-    mode = MODE_INSERT;
-    //!!TODO: for the command thing implement it as having multiple buffers and switching between them (also u should be able to disable vim mode?)
-    if (mode == MODE_NORMAL && input->text[0] == ':')
+    if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_R] && buffer->redo_count)
     {
+        Command *c = &buffer->redo[buffer->redo_count - 1];
+        buffer->redo_count--;
+        view->cursor_pos = c->cursor_pos_before;
+        do_command(view, c);
+        view->selection = 0;
     }
-    if (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_I])
-    {
-        mode = MODE_INSERT;
-        input->text[0] = 0;
-    }
-    if (mode == MODE_INSERT && input->is_pressed[SDL_SCANCODE_ESCAPE])
-        mode = MODE_NORMAL;
-    if (input->is_pressed[SDL_SCANCODE_LEFT] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_H]))
+    if (input->is_pressed[SDL_SCANCODE_LEFT])
     {
         if (view->cursor_pos && buffer->data[view->cursor_pos - 1] != '\n')
             view->cursor_pos--;
     }
-    if (input->is_pressed[SDL_SCANCODE_RIGHT] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_L]))
+    if (input->is_pressed[SDL_SCANCODE_RIGHT])
     {
-        if (view->cursor_pos < buffer->size && buffer->data[view->cursor_pos] != '\n')
+        if (view->cursor_pos + 1 < buffer->size && buffer->data[view->cursor_pos] != '\n')
             view->cursor_pos++;
     }
     {
         int line, col;
         get_line_and_col_from_pos(buffer, view->cursor_pos, &line, &col);
         int visual_col = text_col_to_visual_col(buffer, line, col);
-        if (input->is_pressed[SDL_SCANCODE_UP] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_K]))
+        if (input->is_pressed[SDL_SCANCODE_UP])
         {
             int c = visual_col_to_text_col(buffer, line - 1, visual_col);
             view->cursor_pos = get_pos_from_line_and_col(buffer, line - 1, c);
         }
-        if (input->is_pressed[SDL_SCANCODE_DOWN] || (mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_J]))
+        if (input->is_pressed[SDL_SCANCODE_DOWN])
         {
             int c = visual_col_to_text_col(buffer, line + 1, visual_col);
             view->cursor_pos = get_pos_from_line_and_col(buffer, line + 1, c);
@@ -523,65 +542,29 @@ void update_view(View *view, Input *input)
     }
     if (input->is_pressed[SDL_SCANCODE_RETURN])
     {
-        int c_pos = view->cursor_pos;
-
-        int line, col;
-        get_line_and_col_from_pos(buffer, view->cursor_pos, &line, &col);
-
-        int tab_count = 0;
-        int line_start = get_pos_from_line_and_col(buffer, line, 0);
-
-        for (int i = line_start; buffer->data[i] != '\n' && buffer->data[i] == '\t'; i++)
-            tab_count++;
-        buffer->data = realloc(buffer->data, buffer->size + 1 + tab_count);
-        memmove(buffer->data + view->cursor_pos + 1 + tab_count, buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
-        buffer->data[view->cursor_pos] = '\n';
-        for (int j = view->cursor_pos + 1; j - view->cursor_pos - 1 < tab_count; j++)
-            buffer->data[j] = '\t';
-        view->cursor_pos += tab_count + 1;
-        buffer->size += tab_count + 1;
-
-        push_command(buffer, &(Command){
-                         .type = Command_Enter,
-                         .c_pos = c_pos,
-                         .c_end_pos = view->cursor_pos,
-                     });
+        Command c = {.type = Command_Insert, .inserted_text = "\n", .inserted_text_len = 1,
+                     .insertion_pos = view->cursor_pos,
+                    .cursor_pos_after = view->cursor_pos + 1};
+        do_command(view, &c);
     }
-    if (input->is_pressed[SDL_SCANCODE_BACKSPACE] && !view->selection)
+    if (input->is_pressed[SDL_SCANCODE_BACKSPACE] && !view->selection && view->cursor_pos)
     {
-        if (view->cursor_pos)
-        {
-            char *removed_string = malloc(2);
-            removed_string[0] = buffer->data[view->cursor_pos - 1];
-            removed_string[1] = 0;
-            push_command(buffer, &(Command){
-                             .type = Command_Backspace,
-                             .c_pos = view->cursor_pos,
-                             .c_end_pos = view->cursor_pos - 1,
-                             .removed_string = removed_string,
-                         });view->cursor_pos--;
-            memmove(buffer->data + view->cursor_pos, buffer->data + view->cursor_pos + 1, buffer->size - view->cursor_pos - 1);
-            buffer->size--;
-        }
+        Command c = {.type = Command_Erase, .erase_range_start = view->cursor_pos - 1,
+                     .erase_range_end = view->cursor_pos - 1,
+                    .cursor_pos_after = view->cursor_pos - 1};
+        do_command(view, &c);
     }
 
-    if (input->text[0] && mode == MODE_INSERT)
+    if (input->text[0])
     {
-        int text_len = strlen(input->text);
-        for (int i = 0; i < text_len; i++)
+        for (int i = 0; input->text[i]; i++)
         {
-            push_command(buffer, &(Command){
-                             .type = Command_Text,
-                             .c_pos = view->cursor_pos + i,
-                             .c_end_pos = view->cursor_pos + i + 1,
-                         });
+            Command c = {.type = Command_Insert, .inserted_text = input->text,
+                        .inserted_text_len = 1,
+                        .insertion_pos = view->cursor_pos,
+                        .cursor_pos_after = view->cursor_pos + 1};
+            do_command(view, &c);
         }
-        buffer->data = realloc(buffer->data, buffer->size + text_len);
-        memmove(buffer->data + view->cursor_pos + text_len, buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
-        memcpy(buffer->data + view->cursor_pos, input->text, text_len);
-        buffer->size += text_len;
-        view->cursor_pos += text_len;
-
     }
     if (cursor_save_pos != view->cursor_pos)
         view->selection = 0;
@@ -621,10 +604,10 @@ void update_view(View *view, Input *input)
         if (pos_start > pos_end)
             swap(&pos_start, &pos_end);
         int len = pos_end - pos_start;
+
         if (input->is_control_key_pressed &&
             (input->is_pressed[SDL_SCANCODE_C] || input->is_pressed[SDL_SCANCODE_X]))
         {
-
             clipboard = realloc(clipboard, len + 1);
             memcpy(clipboard, buffer->data + pos_start, len);
             clipboard[len] = 0;
@@ -633,48 +616,26 @@ void update_view(View *view, Input *input)
         if ((input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_X]) ||
             input->is_pressed[SDL_SCANCODE_BACKSPACE])
         {
-            int c_pos = view->cursor_pos;
-
-            char *removed_string = malloc(len + 1);
-            removed_string[len] = 0;
-            memcpy(removed_string, buffer->data + pos_start, len);
-
-            memmove(buffer->data + pos_start, buffer->data + pos_end, buffer->size - pos_end);
-            buffer->size -= len;
-            buffer->data = realloc(buffer->data, buffer->size);
+            assert(pos_end >= pos_start);
+            Command c = {.type = Command_Erase, .erase_range_start = pos_start,
+                        .erase_range_end = pos_end - 1,
+                        .cursor_pos_after = pos_start};
+            do_command(view, &c);
             view->selection = 0;
-            view->cursor_pos = pos_start;
-            //TODO: should we use view->selection range here?
-
-            push_command(buffer, &(Command){
-                             .type = Command_Cut,
-                             .c_pos = c_pos,
-                             .c_end_pos = view->cursor_pos,
-                             .s_pos = pos_start,
-                             .s_end_pos = pos_end,
-                             .removed_string = removed_string,
-                         });
         }
     }
     if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_V])
     {
-        int c_pos = view->cursor_pos;
+        int clipboard_len = strlen(clipboard);
+        Command c = {.type = Command_Insert, .inserted_text = clipboard,
+                     .inserted_text_len = clipboard_len,
+                     .insertion_pos = view->cursor_pos, 
+                    .cursor_pos_after = view->cursor_pos + clipboard_len};
+        do_command(view, &c);
         view->selection = 0;
-        int len = strlen(clipboard);
-        buffer->data = realloc(buffer->data, buffer->size + len);
-        memmove(buffer->data + view->cursor_pos + len, buffer->data + view->cursor_pos, buffer->size - view->cursor_pos);
-        memcpy(buffer->data + view->cursor_pos, clipboard, len);
-        buffer->size += len;
-        view->cursor_pos += len;
-        push_command(buffer, &(Command){
-                         .type = Command_Paste,
-                         .c_pos = c_pos,
-                         .c_end_pos = view->cursor_pos,
-                     });
     }
 
-    assert(view->cursor_pos >= 0 && view->cursor_pos <= buffer->size);
-
+    assert(view->cursor_pos >= 0 && view->cursor_pos < buffer->size);
 }
 
 void draw_view(Image *screen_buffer, View *view, Input *input)
@@ -763,6 +724,7 @@ void draw_view(Image *screen_buffer, View *view, Input *input)
         static float time = 0;
         float t = (sinf(time * 2) + 1) * 0.5f;
         t *= t * t;
+        t = 0;
 
         time += dt;
         r = 0.1, g = 0.7, b = 0.1;
@@ -940,17 +902,19 @@ void draw_view(Image *screen_buffer, View *view, Input *input)
                   0.1, 0.1, 0.1, 1);
         //draw_text(screen_buffer, "hello test ::", 0, min_y, 1, 0, 0);
     }
-    if (view == active_view)
+    if (view == active_view && test_image_count)
     {
 
-        int w = 64;
-        int h = 64;
+        int w = screen_buffer->width;
+        int h = screen_buffer->height;
         int min_x = screen_buffer->width - w - 10 - view->scroll_x;
         int min_y = view->text_min_y - view->scroll_y;
+        min_x = 0;
+        min_y = 0;
         int max_x = min_x + w;
         int max_y = min_y + h;
         static int frame = 0;
-        draw_image(screen_buffer, &test_image[(frame / 8) % test_image_count], min_x, min_y, max_x, max_y, 0.5);
+        draw_image(screen_buffer, &test_image[(frame / 2) % test_image_count], min_x, min_y, max_x, max_y, 0.2);
         frame++;
     }
     view->cursor_prev_pos = view->cursor_pos;
@@ -962,58 +926,37 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
 
     if (first_frame)
     {
-        buffers[0].filename = "test";
+        buffers[0].filename = "code/texor.c";
         buffers[0].data = load_entire_file(buffers[0].filename);
         buffers[0].size = strlen(buffers[0].data) + 1;
 
 
-        buffers[1].filename = "code/main.c";
+        buffers[1].filename = "code/stb_image.h";
         buffers[1].data = load_entire_file(buffers[1].filename);
         buffers[1].size = strlen(buffers[1].data) + 1;
 
         views[0].text_buffer = &buffers[0];
-        views[0].min_x = 40;
+        views[0].min_x = 5;
         views[0].max_x = screen_buffer->width - 5;
         views[0].min_y = 5;
-        views[0].max_y = screen_buffer->height / 2 - 5;
-
-        views[1].text_buffer = &buffers[0];
-        views[1].min_x = views[0].min_x;
-        views[1].max_x = views[0].max_x;
-        views[1].min_y = views[0].max_y + 10;
-        views[1].max_y = screen_buffer->height - 5;
-
-
+        views[0].max_y = screen_buffer->height - 5;
 #if 0
-        buffers[1].min_x = buffers[0].max_x + 10;
-        buffers[1].max_x = screen_buffer->width - 5;
-        buffers[1].min_y = buffers[0].min_y;
-        buffers[1].max_y = buffers[0].max_y;
-        buffers[2].filename = "code/stb_image.h";
-        buffers[2].data = load_entire_file(buffers[2].filename);
-        buffers[2].size = strlen(buffers[2].data) + 1;
-        buffers[2].min_x = buffers[0].min_x;
-        buffers[2].max_x = screen_buffer->width - 5;
-        buffers[2].min_y = buffers[0].max_y + 10;
-        buffers[2].max_y = screen_buffer->height - 5;
-
-        buffers[3].filename = "code/stb_truetype.h";
-        buffers[3].data = load_entire_file(buffers[3].filename);
-        buffers[3].size = strlen(buffers[3].data) + 1;
-        buffers[3].min_x = buffers[1].min_x;
-        buffers[3].max_x = buffers[1].max_x;
-        buffers[3].min_y = buffers[2].min_y;
-        buffers[3].max_y = buffers[2].max_y;
+        views[1].text_buffer = &buffers[1];
+        views[1].min_x = views[0].max_x;
+        views[1].max_x = screen_buffer->width - 5;
+        views[1].min_y = views[0].min_y;
+        views[1].max_y = views[0].max_y;
 #endif
-        Image mario_image = load_image("Mario.png");
-        // for (int j = 0; j < 3; j++)
-        // {
-        //         game_state->mario_run[i][1][j] = image_view(&mario_image, 32 * (j + 1), 32 * i, 32, 32 + 32 * i);
-        //         game_state->mario_run[i][0][j] = image_flip_by_x(&game_state->mario_run[i][1][j]);
-        // }
-        test_image_count = 3;
-        for (int j = 0; j < 3; j++)
-            test_image[j] = image_view(&mario_image, 32 * (j + 1), 32, 32, 64);
+        // TODO: when I load this it takes some time and mouse input become broken
+#if 1
+        Image cow_image = load_image("cow.png");
+        printf("%d %d\n", cow_image.width, cow_image.height);
+        test_image_count = 36;
+        for (int j = 0; j < test_image_count; j++)
+        {
+            test_image[j] = image_view(&cow_image, 300 * j + 100, 50, 200, cow_image.height - 50);
+        }
+#endif
         stbtt_fontinfo info;
 
         long size;
@@ -1064,10 +1007,10 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
             stbtt_MakeCodepointBitmap(&info, font_bitmaps[c] + byteOffset, w, h, font_advance_x, scale, scale, c);
         }
         first_frame = 0;
+        active_view = &views[0];
     }
-
 #if 1
-    if (input->is_mouse_left_button_pressed && (!active_buffer || !active_view->selection))
+    if (input->is_mouse_left_button_pressed && (!active_view || !active_view->selection))
     {
         for (int i = 0; i < view_count; i++)
         {
@@ -1082,7 +1025,6 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
     }
 #endif
     //memset(screen_buffer->pixels, 0, screen_buffer->pitch * screen_buffer->height * 4);
-
 
     for (int i = 0; i < view_count; i++)
     {
@@ -1110,16 +1052,12 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
             view_input.is_pressed = is_pressed;
         }
         view_input.dt = input->dt;
-        view_input.mouse_x = clamp(0, input->mouse_x - view->min_x, view->max_x);
-        view_input.mouse_y = clamp(0, input->mouse_y - view->min_y, view->max_y);
-        view_input.mouse_prev_x = clamp(0, input->mouse_prev_x - view->min_x, view->max_x);
-        view_input.mouse_prev_y = clamp(0, input->mouse_prev_y - view->min_y, view->max_y);
-        if (view != active_view && input->is_pressed[SDL_SCANCODE_P])
-            printf("cursor before: %d\n", view->cursor_pos);
+        view_input.mouse_x = input->mouse_x - view->min_x;
+        view_input.mouse_y = input->mouse_y - view->min_y;
+        view_input.mouse_prev_x = input->mouse_prev_x - view->min_x;
+        view_input.mouse_prev_y = input->mouse_prev_y - view->min_y;
         update_view(view, &view_input);
         draw_view(&img, view, &view_input);
-        if (view != active_view && input->is_pressed[SDL_SCANCODE_P])
-            printf("cursor after: %d\n", view->cursor_pos);
         if (view == active_view)
             draw_rect_outline(screen_buffer, view->min_x, view->min_y, view->max_x, view->max_y, 2, 1, 0, 0, 1);
         else
@@ -1130,10 +1068,9 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
             if (j != i && v->text_buffer == view->text_buffer)
             {
                 v->text_buffer->data = view->text_buffer->data;
-                if (v->cursor_pos > v->text_buffer->size)
+                if (v->cursor_pos >= v->text_buffer->size)
                 {
-                    v->cursor_pos = v->text_buffer->size;
-                    printf("moving....\n");
+                    v->cursor_pos = v->text_buffer->size - 1;
                 }
             }
         }

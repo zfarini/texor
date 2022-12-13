@@ -166,7 +166,7 @@ int main(void)
         SDL_GetMouseState(&input.mouse_x, &input.mouse_y);
         t1 = SDL_GetTicks();
         update_and_render_the_editor(&back_buffer, &input);
-        printf("%d\n", SDL_GetTicks() - t1);
+        //printf("%d\n", SDL_GetTicks() - t1);
         SDL_RenderClear(renderer);
         SDL_UpdateTexture(screen_texture, NULL, back_buffer.pixels, window_width * 4);
         SDL_RenderCopy(renderer, screen_texture, NULL, NULL);
