@@ -1,117 +1,20 @@
-#define TAB_SIZE 4
-/*TODO:
- *
-- open new files, save
-- change name of window->text_min_x and use them correctly
-- try something like vim command bar to test code reuse
-- start vim or emacs stuff
-*/
 static const char *c_keywords[] = {"auto", "break", "case", "char", "const", "continue", "default", "do", "double",
                            "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register",
                            "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
                            "unsigned", "void", "volatile", "while"};
 
-typedef enum Command_Type {
-    Command_Insert = 1,
-    Command_Erase,
-} Command_Type;
-
-typedef struct Command {
-    Command_Type type;
-    int insertion_pos;
-    char *inserted_text;
-    int inserted_text_len;
-
-    char *erased_text;
-    int erased_text_len;
-
-    int erase_range_start;
-    int erase_range_end;
-
-    int cursor_pos_before;
-    int cursor_pos_after;
-    
-    int selection;
-    int selection_start_pos;
-    int selection_end_pos;
-} Command;
-
-typedef struct Buffer Buffer;
-typedef struct Window Window;
-
-struct Buffer { // this will be shared by multiple windows
-    char *data;
-    int size; // this includes \0
-    char *filename;
-    Command undo[4096]; // should this be here or on the window?
-    Command redo[4096];
-    int undo_count;
-    int redo_count;
-};
-
-enum Window_Buffer_Mode {
-    MODE_NORMAL,
-    MODE_INSERT,
-};
-
-typedef struct Window_Buffer {
-    Buffer *buffer;
-    float scroll_y;
-    float scroll_x;
-    float scroll_dy;
-    int selection_start_pos;
-    int selection_end_pos;
-    int selection;
-    int new_selection;
-    int cursor_pos;
-    int cursor_prev_pos;
-    int is_active;
-    int is_cmd;
-    int mode;
-}Window_Buffer;
-
-struct Window {
-    int mode;
-    Window_Buffer text_buffer;
-    Window_Buffer command_buffer;
-    // we might have later something like compilation buffer?
-    int min_x;
-    int max_x;
-    int min_y;
-    int max_y;
-};
-
-typedef struct Input {
-    char *text;
-    int is_control_key_pressed;
-    int *is_pressed;
-    int mouse_x;
-    int mouse_y;
-    int mouse_prev_x;
-    int mouse_prev_y;
-    float mouse_scroll_y;
-    int is_mouse_left_button_pressed;
-    float dt;
-} Input;
-
 static int font_line_height;
 static int font_advance_x;
 static uint8_t *font_bitmaps[256];
-
-static Buffer *active_buffer;
-static Buffer buffers[4];
 
 static char *clipboard;
 
 static Image test_image[64];
 static int test_image_count;
 
-//static int mode = MODE_NORMAL;
-
-
-static Window windows[8];
-static Window *active_window;
-int window_count = 2;
+static Buffer buffers[8];
+static Buffer *active_buffer;
+static int buffer_count = 1;
 
 void swap(int *x, int *y)
 {
@@ -160,7 +63,7 @@ int get_line_count(Buffer *buffer)
     return result;
 }
 
-Image image_window(Image *image, int xoffset, int yoffset, int width, int height)
+Image image_buffer(Image *image, int xoffset, int yoffset, int width, int height)
 {
     Image result = {
         .width = width,
@@ -171,7 +74,7 @@ Image image_window(Image *image, int xoffset, int yoffset, int width, int height
     return result;
 }
 
-void draw_image(Image *screen_buffer, Image *img, int min_x, int min_y, int max_x, int max_y, float a)
+void draw_image(Image *draw_image, Image *img, int min_x, int min_y, int max_x, int max_y, float a)
 {
     if (max_x == min_x || max_y == min_y)
         return ;
@@ -184,11 +87,11 @@ void draw_image(Image *screen_buffer, Image *img, int min_x, int min_y, int max_
         min_x = 0;
     if (min_y < 0)
         min_y = 0;
-    if (max_x > screen_buffer->width)
-        max_x = screen_buffer->width;
-    if (max_y > screen_buffer->height)
-        max_y = screen_buffer->height;
-    uint32_t *row = screen_buffer->pixels + min_y * screen_buffer->pitch + min_x;
+    if (max_x > draw_image->width)
+        max_x = draw_image->width;
+    if (max_y > draw_image->height)
+        max_y = draw_image->height;
+    uint32_t *row = draw_image->pixels + min_y * draw_image->pitch + min_x;
     for (int y = min_y; y < max_y; y++)
     {
         uint32_t *dest_pixel = (uint32_t *)row;
@@ -214,19 +117,19 @@ void draw_image(Image *screen_buffer, Image *img, int min_x, int min_y, int max_
             *dest_pixel = (r << 24) | (g << 16) | (b << 8);
             dest_pixel++;
         }
-        row += screen_buffer->pitch;
+        row += draw_image->pitch;
     }
 }
 
-void draw_rect(Image *screen_buffer, int min_x, int min_y, int max_x, int max_y,
+void draw_rect(Image *draw_image, int min_x, int min_y, int max_x, int max_y,
                float r, float g, float b, float a)
 {
     if (min_x < 0) min_x = 0;
     if (min_y < 0) min_y = 0;
-    if (max_x > screen_buffer->width) max_x = screen_buffer->width;
-    if (max_y > screen_buffer->height) max_y = screen_buffer->height;
+    if (max_x > draw_image->width) max_x = draw_image->width;
+    if (max_y > draw_image->height) max_y = draw_image->height;
 
-    uint32_t *row = screen_buffer->pixels + min_y * screen_buffer->pitch + min_x;
+    uint32_t *row = draw_image->pixels + min_y * draw_image->pitch + min_x;
     for (int y = min_y; y < max_y; y++)
     {
         uint32_t *pixel = row;
@@ -246,25 +149,25 @@ void draw_rect(Image *screen_buffer, int min_x, int min_y, int max_x, int max_y,
                      ((uint32_t)(db * 255 + 0.5f) << 8);
             pixel++;
         }
-        row += screen_buffer->pitch;
+        row += draw_image->pitch;
     }
 }
 
-void draw_rect_outline(Image *screen_buffer, int min_x, int min_y, int max_x, int max_y,
+void draw_rect_outline(Image *draw_image, int min_x, int min_y, int max_x, int max_y,
         int thickness, float r, float g, float b, float a)
 {
-    draw_rect(screen_buffer, min_x, min_y, min_x + thickness, max_y, r, g, b, a);
-    draw_rect(screen_buffer, min_x, min_y, max_x, min_y + thickness, r, g, b, a);
-    draw_rect(screen_buffer, min_x, max_y - thickness, max_x, max_y, r, g, b, a);
-    draw_rect(screen_buffer, max_x - thickness, min_y, max_x, max_y, r, g, b, a);
+    draw_rect(draw_image, min_x, min_y, min_x + thickness, max_y, r, g, b, a);
+    draw_rect(draw_image, min_x, min_y, max_x, min_y + thickness, r, g, b, a);
+    draw_rect(draw_image, min_x, max_y - thickness, max_x, max_y, r, g, b, a);
+    draw_rect(draw_image, max_x - thickness, min_y, max_x, max_y, r, g, b, a);
 }
 
 //TODO: kerning, antialiasing?
-void draw_char(Image *screen_buffer, int c, int min_x, int min_y, float fr, float fg, float fb)
+void draw_char(Image *draw_image, int c, int min_x, int min_y, float fr, float fg, float fb)
 {
     if (c < 32 || c >= 127)
     {
-        draw_rect(screen_buffer, min_x, min_y, min_x + font_advance_x,
+        draw_rect(draw_image, min_x, min_y, min_x + font_advance_x,
                   min_y + font_line_height, 1, 0, 1, 1);
         return;
     }
@@ -275,10 +178,10 @@ void draw_char(Image *screen_buffer, int c, int min_x, int min_y, float fr, floa
 
     if (min_x < 0) min_x = 0;
     if (min_y < 0) min_y = 0;
-    if (max_x > screen_buffer->width) max_x = screen_buffer->width;
-    if (max_y > screen_buffer->height) max_y = screen_buffer->height;
+    if (max_x > draw_image->width) max_x = draw_image->width;
+    if (max_y > draw_image->height) max_y = draw_image->height;
 
-    uint32_t *row = screen_buffer->pixels + min_y * screen_buffer->pitch + min_x;
+    uint32_t *row = draw_image->pixels + min_y * draw_image->pitch + min_x;
     uint8_t *src_row = &font_bitmaps[c][(min_y - init_min_y)  * font_advance_x + (min_x - init_min_x)];
     for (int y = min_y; y < max_y; y++)
     {
@@ -301,11 +204,11 @@ void draw_char(Image *screen_buffer, int c, int min_x, int min_y, float fr, floa
             pixel++;
         }
         src_row += font_advance_x;
-        row += screen_buffer->pitch;
+        row += draw_image->pitch;
     }
 }
 
-void draw_text(Image *screen_buffer, char *s, int min_x, int min_y, float fr, float fg, float fb)
+void draw_text(Image *draw_image, char *s, int min_x, int min_y, float fr, float fg, float fb)
 {
     float x = min_x;
     float y = min_y;
@@ -320,29 +223,18 @@ void draw_text(Image *screen_buffer, char *s, int min_x, int min_y, float fr, fl
         {
             for (int j = 0; j < TAB_SIZE; j++)
             {
-                draw_char(screen_buffer, ' ', x, y, fr, fg, fb);
+                draw_char(draw_image, ' ', x, y, fr, fg, fb);
                 x += font_advance_x;
             }
         }
         else
         {
-            draw_char(screen_buffer, s[i], x, y, fr, fg, fb);
+            draw_char(draw_image, s[i], x, y, fr, fg, fb);
             x += font_advance_x;
         }
     }
 }
-#if 0
-void draw_text_f(Image *screen_buffer, int min_x, int min_y, float fr, float fb, float db,
-                char *fmt, ...)
-{
-    char s[4096];
-    va_list args;
-    va_start(args, fmt);
-    vsprintf(s, fmt, args);
-    va_end(args);
-    draw_text(screen_buffer, s, min_x, min_y, fr, fb, db);
-}
-#endif
+
 
 void get_line_and_col_from_pos(Buffer *buffer, int pos, int *line, int *col)
 {
@@ -429,11 +321,10 @@ int text_col_to_visual_col(Buffer *buffer, int line, int text_col)
     return visual_col;
 }
 
-int screen_pos_to_buffer_pos(Window_Buffer *wb, int screen_x, int screen_y)
+int screen_pos_to_buffer_pos(Buffer *buffer, int screen_x, int screen_y)
 {
-    Buffer *buffer = wb->buffer;
-    int line = (screen_y + wb->scroll_y) / font_line_height;
-    int col = (screen_x + wb->scroll_x) / font_advance_x;
+    int line = (screen_y + buffer->scroll_y) / font_line_height;
+    int col = (screen_x + buffer->scroll_x) / font_advance_x;
     //decrease col by something?
     int line_start = get_pos_from_line_and_col(buffer, line, 0);
     if (line_start >= buffer->size)
@@ -458,16 +349,61 @@ void buffer_erase_range(Buffer *buffer, int start, int end) // end is included
     buffer->data = realloc(buffer->data, buffer->size);// we don't have to do this?
 }
 
-void do_command_(Window_Buffer *wb, Command *command, int redo)
+void move_cursor(Buffer *buffer, int dir, int times)
 {
-    Buffer *buffer = wb->buffer;
+    int line, col;
+    get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+    if (dir == UP || dir == DOWN)
+    {
+        int visual_col = text_col_to_visual_col(buffer, line, col);
+        if (dir == UP)
+        {
+            int c = visual_col_to_text_col(buffer, line - times, visual_col);
+            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line - times, c);
+        }
+        else
+        {
+            int c = visual_col_to_text_col(buffer, line + times, visual_col);
+            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line + times, c);
+        }
+    }
+    else if (dir == LEFT)
+    {
+        buffer->cursor_pos = get_pos_from_line_and_col(buffer, line, col - times);
+    }
+    else if (dir == RIGHT)
+    {
+        buffer->cursor_pos = get_pos_from_line_and_col(buffer, line, col + times);
+        if (buffer->data[buffer->cursor_pos] == '\n' &&
+                buffer->cursor_pos && buffer->data[buffer->cursor_pos - 1] != '\n')
+            buffer->cursor_pos--;
+    }   
+}
 
+void do_text_command(Buffer *buffer, char *cmd)
+{
+    if (!strcmp(cmd, "q"))
+        should_quit = 1;
+    if (!strcmp(cmd, "w"))
+    {
+        FILE *file = fopen(buffer->filename, "w");
+        if (file)
+        {
+            fwrite(buffer->data, buffer->size - 1, 1, file);
+            fclose(file);
+        }
+        
+    }
+}
+
+void do_command_(Buffer *buffer, Command *command, int redo)
+{
     assert(buffer->undo_count < (int)array_length(buffer->undo));
     Command *c = &buffer->undo[buffer->undo_count];
     *c = *command;
-    c->selection = wb->selection;
-    c->selection_start_pos = wb->selection_start_pos;
-    c->selection_end_pos = wb->selection_end_pos;
+    c->selection = buffer->selection;
+    c->selection_start_pos = buffer->selection_start_pos;
+    c->selection_end_pos = buffer->selection_end_pos;
     buffer->undo_count++;
     
     if (redo == 0)
@@ -483,7 +419,7 @@ void do_command_(Window_Buffer *wb, Command *command, int redo)
     if (c->erase_range_start > c->erase_range_end)
         swap(&c->erase_range_start, &c->erase_range_end);
 
-    c->cursor_pos_before = wb->cursor_pos;
+    c->cursor_pos_before = buffer->cursor_pos;
     if (c->type == Command_Insert)
     {
         if (!redo)
@@ -513,306 +449,534 @@ void do_command_(Window_Buffer *wb, Command *command, int redo)
     }
     else
         assert(0);
-    wb->cursor_pos = c->cursor_pos_after;
+    buffer->cursor_pos = c->cursor_pos_after;
 }
 
 
-void do_command(Window_Buffer *wb, Command *command)
+void do_command(Buffer *buffer, Command *command)
 {
-    do_command_(wb, command, 0);
+    do_command_(buffer, command, 0);
 }
 
-void redo_command(Window_Buffer *wb, Command *command)
+void redo_command(Buffer *buffer, Command *command)
 {
-    do_command_(wb, command, 1);
+    do_command_(buffer, command, 1);
 }
 
-void update_window_buffer(Window_Buffer *wb, Input *input)
+void undo_last_command(Buffer *buffer)
 {
-    assert(wb && wb->buffer && wb->buffer->data);
-    Buffer *buffer = wb->buffer;
-    assert(wb->cursor_pos >= 0 && wb->cursor_pos < buffer->size);
-    int cursor_save_pos = wb->cursor_pos;
-    wb->mode = MODE_INSERT;
-    if (wb->mode == MODE_NORMAL)
-    {
-        if (input->is_pressed[SDL_SCANCODE_I])
-        {
-            input->text = "";
-            wb->mode = MODE_INSERT;
-        }
-        if (input->is_pressed[SDL_SCANCODE_A])
-        {
-            input->text = "";
-            wb->mode = MODE_INSERT;
-            if (wb->cursor_pos + 1 < buffer->size)
-                wb->cursor_pos++;
-        }
-    }
+    if (!buffer->undo_count)
+        return ;
+    Command *c = &buffer->undo[buffer->undo_count - 1];
+    buffer->undo_count--;
+    buffer->redo[buffer->redo_count] = *c;
+    buffer->redo_count++;
 
-    if (wb->mode == MODE_INSERT && input->is_pressed[SDL_SCANCODE_ESCAPE])
+    buffer->selection = c->selection;
+    buffer->selection_start_pos = c->selection_start_pos;
+    buffer->selection_end_pos = c->selection_end_pos;
+    if (c->type == Command_Insert)
     {
-        wb->mode = MODE_NORMAL;
+        buffer_erase_range(buffer, c->insertion_pos,
+        c->insertion_pos + c->inserted_text_len - 1);
     }
-    if (wb->is_cmd)
-        wb->mode = MODE_INSERT;
+    else
+    {
+        buffer_insert_at(buffer, c->erase_range_start, c->erased_text, c->erased_text_len);
+    }
+    buffer->cursor_pos = c->cursor_pos_before;
+}
 
-    if ((wb->mode == MODE_INSERT && input->is_pressed[SDL_SCANCODE_LEFT])
-        || (wb->mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_H]))
-    {
-        if (wb->cursor_pos && buffer->data[wb->cursor_pos - 1] != '\n')
-            wb->cursor_pos--;
-    }
-    if ((wb->mode == MODE_INSERT && input->is_pressed[SDL_SCANCODE_RIGHT])
-        || (wb->mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_L]))
-    {
-        if (wb->cursor_pos + 1 < buffer->size && buffer->data[wb->cursor_pos] != '\n')
-            wb->cursor_pos++;
-    }
+void redo_last_command(Buffer *buffer)
+{
+    if (!buffer->redo_count)
+        return ;
+    Command *c = &buffer->redo[buffer->redo_count - 1];
+    buffer->redo_count--;
+    buffer->cursor_pos = c->cursor_pos_before;
+    redo_command(buffer, c);
+    buffer->selection = 0;
+}
 
+
+void update_buffer_insert_mode(Buffer *buffer, Input *input)
+{
+
+    int cursor_save_pos = buffer->cursor_pos;
+    //hack
+    int temp_offset_x = uint_len(get_line_count(buffer)) * font_advance_x + 15;
+    int mouse_pos = screen_pos_to_buffer_pos(buffer, input->mouse_x - temp_offset_x, input->mouse_y);
+    int mouse_prev_pos = screen_pos_to_buffer_pos(buffer, input->mouse_prev_x - temp_offset_x, input->mouse_prev_y);
+
+    if (input->is_pressed[SDL_SCANCODE_LEFT])
+    {
+        if (buffer->cursor_pos && buffer->data[buffer->cursor_pos - 1] != '\n')
+            buffer->cursor_pos--;
+    }
+    if (input->is_pressed[SDL_SCANCODE_RIGHT])
+    {
+        if (buffer->cursor_pos + 1 < buffer->size && buffer->data[buffer->cursor_pos] != '\n')
+            buffer->cursor_pos++;
+    }   
     {
         int line, col;
-        get_line_and_col_from_pos(buffer, wb->cursor_pos, &line, &col);
+        get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
         int visual_col = text_col_to_visual_col(buffer, line, col);
-        if ((wb->mode == MODE_INSERT && input->is_pressed[SDL_SCANCODE_UP])
-            || (wb->mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_K]))
+        if (input->is_pressed[SDL_SCANCODE_UP])
         {
             int c = visual_col_to_text_col(buffer, line - 1, visual_col);
-            wb->cursor_pos = get_pos_from_line_and_col(buffer, line - 1, c);
+            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line - 1, c);
         }
-        if ((wb->mode == MODE_INSERT && input->is_pressed[SDL_SCANCODE_DOWN])
-            || (wb->mode == MODE_NORMAL && input->is_pressed[SDL_SCANCODE_J]))
+        if (input->is_pressed[SDL_SCANCODE_DOWN])
         {
             int c = visual_col_to_text_col(buffer, line + 1, visual_col);
-            wb->cursor_pos = get_pos_from_line_and_col(buffer, line + 1, c);
+            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line + 1, c);
         }
     }
-    if (wb->mode == MODE_INSERT)
+    if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_Z] && buffer->undo_count)
     {
-        if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_Z] && buffer->undo_count)
-        {
-            Command *c = &buffer->undo[buffer->undo_count - 1];
-            buffer->undo_count--;
+        undo_last_command(buffer);
+    }
+    if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_R] && buffer->redo_count)
+    {
+        redo_last_command(buffer);
 
-            buffer->redo[buffer->redo_count] = *c;
-            buffer->redo_count++;
-
-            wb->selection = c->selection;
-            wb->selection_start_pos = c->selection_start_pos;
-            wb->selection_end_pos = c->selection_end_pos;
-            if (c->type == Command_Insert)
-            {
-                buffer_erase_range(buffer, c->insertion_pos,
-                                   c->insertion_pos + c->inserted_text_len - 1);
-            }
-            else
-            {
-                buffer_insert_at(buffer, c->erase_range_start, c->erased_text, c->erased_text_len);
-            }
-            wb->cursor_pos = c->cursor_pos_before;
-        }
-
-        if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_R] && buffer->redo_count)
+    }
+    if (input->is_pressed[SDL_SCANCODE_RETURN])
+    {
+        if (buffer->text_buffer)
         {
-            Command *c = &buffer->redo[buffer->redo_count - 1];
-            buffer->redo_count--;
-            wb->cursor_pos = c->cursor_pos_before;
-            redo_command(wb, c);
-            wb->selection = 0;
+            do_text_command(buffer->text_buffer, buffer->data);
+            buffer->text_buffer->switch_to_normal_mode = 1;
         }
-
-        if (input->is_pressed[SDL_SCANCODE_RETURN])
+        else
         {
-
-            Command c = {.type = Command_Insert, .inserted_text = "\n", .inserted_text_len = 1,
-                         .insertion_pos = wb->cursor_pos,
-                        .cursor_pos_after = wb->cursor_pos + 1};
-            do_command(wb, &c);
-        }
-        if (input->is_pressed[SDL_SCANCODE_BACKSPACE] && !wb->selection && wb->cursor_pos)
-        {
-            Command c = {.type = Command_Erase, .erase_range_start = wb->cursor_pos - 1,
-                         .erase_range_end = wb->cursor_pos - 1,
-                        .cursor_pos_after = wb->cursor_pos - 1};
-            do_command(wb, &c);
-        }
-
-        if (input->text[0])
-        {
-            for (int i = 0; input->text[i]; i++)
-            {
-                Command c = {.type = Command_Insert, .inserted_text = input->text,
-                            .inserted_text_len = 1,
-                            .insertion_pos = wb->cursor_pos,
-                            .cursor_pos_after = wb->cursor_pos + 1};
-                do_command(wb, &c);
-            }
-        }
-        if (cursor_save_pos != wb->cursor_pos)
-            wb->selection = 0;
-        // mouse click & selection
-        int mouse_pos = screen_pos_to_buffer_pos(wb, input->mouse_x, input->mouse_y);
-        int mouse_prev_pos = screen_pos_to_buffer_pos(wb, input->mouse_prev_x, input->mouse_prev_y);
-        if (wb->is_cmd)
-            input->is_mouse_left_button_pressed = 0;
-        if (input->is_mouse_left_button_pressed)//&& !wb->selection)
-        {
-            wb->cursor_pos = mouse_pos;
-        }
-        int mouse_moved = (input->mouse_x != input->mouse_prev_x) || (input->mouse_y != input->mouse_prev_y);
-        if (input->is_mouse_left_button_pressed && mouse_moved)
-        {
-            if (!wb->selection || wb->new_selection)
-            {
-                wb->new_selection = 0;
-                wb->selection = 1;
-                wb->selection_start_pos = mouse_prev_pos;
-            }
-            wb->selection_end_pos = mouse_pos;
-        }
-        if (wb->new_selection && input->is_mouse_left_button_pressed)
-            wb->selection = 0;
-        if (!input->is_mouse_left_button_pressed)
-            wb->new_selection = 1;
-        if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_A])
-        {
-            wb->selection = 1;
-            wb->selection_start_pos = 0;
-            wb->selection_end_pos = buffer->size - 1;
-        }
-        if (wb->selection)
-        {
-            int pos_start = wb->selection_start_pos;
-            int pos_end = wb->selection_end_pos;
-            if (pos_start > pos_end)
-                swap(&pos_start, &pos_end);
-            int len = pos_end - pos_start;
-
-            if (input->is_control_key_pressed &&
-                (input->is_pressed[SDL_SCANCODE_C] || input->is_pressed[SDL_SCANCODE_X]))
-            {
-                clipboard = realloc(clipboard, len + 1);
-                memcpy(clipboard, buffer->data + pos_start, len);
-                clipboard[len] = 0;
-                //printf("clipboard: \"%s\"\n", clipboard);
-            }
-            if ((input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_X]) ||
-                input->is_pressed[SDL_SCANCODE_BACKSPACE])
-            {
-                assert(pos_end >= pos_start);
-                Command c = {.type = Command_Erase, .erase_range_start = pos_start,
-                            .erase_range_end = pos_end - 1,
-                            .cursor_pos_after = pos_start};
-                do_command(wb, &c);
-                wb->selection = 0;
-            }
-        }
-        if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_V])
-        {
-            int clipboard_len = strlen(clipboard);
-            Command c = {.type = Command_Insert, .inserted_text = clipboard,
-                         .inserted_text_len = clipboard_len,
-                         .insertion_pos = wb->cursor_pos, 
-                        .cursor_pos_after = wb->cursor_pos + clipboard_len};
-            do_command(wb, &c);
-            wb->selection = 0;
+            int i = buffer->cursor_pos;
+            if (buffer->data[i] == '\n')
+                i--;
+            while (i >= 0 && buffer->data[i] != '\n')
+                i--;
+            i++;
+            int start = i;
+            while (i < buffer->cursor_pos && (buffer->data[i] == ' ' || buffer->data[i] == '\t'))
+                i++;
+            printf("%d %d\n", i, start);
+            char *s = malloc(i - start + 2); // @leak
+            s[0] = '\n';
+            memcpy(s + 1, buffer->data + start, i - start);
+            s[i - start + 1] = 0;
+            Command c = {.type = Command_Insert, .inserted_text = s, .inserted_text_len = strlen(s),
+                         .insertion_pos = buffer->cursor_pos,
+                        .cursor_pos_after = buffer->cursor_pos + strlen(s)};
+            do_command(buffer, &c);
         }
     }
+    if (input->is_pressed[SDL_SCANCODE_BACKSPACE] && !buffer->selection && buffer->cursor_pos)
+    {
+        Command c = {.type = Command_Erase, .erase_range_start = buffer->cursor_pos - 1,
+                     .erase_range_end = buffer->cursor_pos - 1,
+                    .cursor_pos_after = buffer->cursor_pos - 1};
+        do_command(buffer, &c);
+    }
+    if (cursor_save_pos != buffer->cursor_pos)
+        buffer->selection = 0;
 
-    assert(wb->cursor_pos >= 0 && wb->cursor_pos < buffer->size);
+    int mouse_moved = (input->mouse_x != input->mouse_prev_x) || (input->mouse_y != input->mouse_prev_y);
+    if (input->is_mouse_left_button_pressed && mouse_moved)
+    {
+        if (!buffer->selection || buffer->new_selection)
+        {
+            buffer->new_selection = 0;
+            buffer->selection = 1;
+            buffer->selection_start_pos = mouse_prev_pos;
+        }
+        buffer->selection_end_pos = mouse_pos;
+    }
+    if (buffer->new_selection && input->is_mouse_left_button_pressed)
+        buffer->selection = 0;
+    if (!input->is_mouse_left_button_pressed)
+        buffer->new_selection = 1;
+    if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_A])
+    {
+        buffer->selection = 1;
+        buffer->selection_start_pos = 0;
+        buffer->selection_end_pos = buffer->size - 1;
+    }
+    if (buffer->selection)
+    {
+    int pos_start = buffer->selection_start_pos;
+        int pos_end = buffer->selection_end_pos;
+        if (pos_start > pos_end)
+            swap(&pos_start, &pos_end);
+        int len = pos_end - pos_start;
+
+        if (input->is_control_key_pressed &&
+            (input->is_pressed[SDL_SCANCODE_C] || input->is_pressed[SDL_SCANCODE_X]))
+        {
+            clipboard = realloc(clipboard, len + 1);
+            memcpy(clipboard, buffer->data + pos_start, len);
+            clipboard[len] = 0;
+            //printf("clipboard: \"%s\"\n", clipboard);
+        }
+        if ((input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_X]) ||
+            input->is_pressed[SDL_SCANCODE_BACKSPACE] || input->text[0])
+        {
+            assert(pos_end >= pos_start);
+            Command c = {.type = Command_Erase, .erase_range_start = pos_start,
+                        .erase_range_end = pos_end - 1,
+                        .cursor_pos_after = pos_start};
+            do_command(buffer, &c);
+            buffer->selection = 0;
+        }
+    }
+    if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_V])
+    {
+        int clipboard_len = strlen(clipboard);
+        Command c = {.type = Command_Insert, .inserted_text = clipboard,
+                     .inserted_text_len = clipboard_len,
+                     .insertion_pos = buffer->cursor_pos, 
+                    .cursor_pos_after = buffer->cursor_pos + clipboard_len};
+        do_command(buffer, &c);
+        buffer->selection = 0;
+    }
+
+    if (input->text[0]) // should happen after selection
+    {
+        for (int i = 0; input->text[i]; i++)
+        {
+            Command c = {.type = Command_Insert, .inserted_text = input->text,
+                        .inserted_text_len = 1,
+                        .insertion_pos = buffer->cursor_pos,
+                        .cursor_pos_after = buffer->cursor_pos + 1};
+            do_command(buffer, &c);
+        }
+    }
 }
 
-void draw_window_buffer(Image *screen_buffer, Window_Buffer *wb, Input *input)
+void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
 {
-    Buffer *buffer = wb->buffer;
+    assert(buffer->cursor_pos >= 0 && buffer->cursor_pos < buffer->size);
 
-    int line_count = get_line_count(buffer);
+    int filebar_height = font_line_height;
+    int commandbar_height = font_line_height * 2;
+    int text_height = draw_image->height - commandbar_height - filebar_height;
+    
+    int d = text_height - (text_height / font_line_height) * font_line_height;
+    text_height -= d;
+    assert(text_height % font_line_height == 0);
+    commandbar_height += d;
 
-    float dt = 1.0f / 60;
+    if (input->is_pressed[SDL_SCANCODE_ESCAPE] || buffer->switch_to_normal_mode)
+    {
+        buffer->mode = MODE_NORMAL;
+        input->text[0] = 0; // is this possible?
+        buffer->in[0] = 0;
+        free(buffer->cmd_buffer->data);
+        memset(buffer->cmd_buffer, 0, sizeof(*buffer->cmd_buffer));
+        buffer->cmd_buffer->data = calloc(1, 1);
+        buffer->cmd_buffer->size = 1;
+        buffer->cmd_buffer->text_buffer = buffer;
+        buffer->switch_to_normal_mode = 0;
+        buffer->selection = 0;
+    }
+    if (buffer->mode == MODE_NORMAL && 
+            (input->is_pressed[SDL_SCANCODE_I] || input->is_pressed[SDL_SCANCODE_A] ||
+             input->is_pressed[SDL_SCANCODE_O]))
+    {
+        buffer->mode = MODE_INSERT;
+        input->text[0] = 0;
+        if (input->is_pressed[SDL_SCANCODE_A])
+        {
+            if (buffer->data[buffer->cursor_pos] != '\n')
+                buffer->cursor_pos++;
+        }
+        else if (input->is_pressed[SDL_SCANCODE_O])
+        {
+            int line, col;
+            get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line + 1, 0);
+            //got to the next lien with the same indentation
+        }
+    }
+    int normal = (buffer->mode == MODE_NORMAL);
+    int insert = (buffer->mode == MODE_INSERT || buffer->mode == MODE_COMMAND);
+    int switch_to_command_mode = 0;
+    // normal & insert mode
+    //hack
+    int temp_offset_x = uint_len(get_line_count(buffer)) * font_advance_x + 15;
+    int mouse_pos = screen_pos_to_buffer_pos(buffer, input->mouse_x - temp_offset_x, input->mouse_y);
+    int mouse_prev_pos = screen_pos_to_buffer_pos(buffer, input->mouse_prev_x - temp_offset_x, input->mouse_prev_y);
+    if (input->is_mouse_left_button_pressed)//&& !buffer->selection)
+    {
+        buffer->cursor_pos = mouse_pos;
+    }
+    if (normal)
+    {
+        // 5j?
+        memcpy(buffer->in + strlen(buffer->in), input->text, strlen(input->text) + 1);
+        int l = strlen(buffer->in); 
+        int p = 1, j = 0;
+        while (j < l && isdigit(buffer->in[j]))
+            j++;
+        int times = atoi(buffer->in);
+        int num = (times > 0);
+        if (times <= 0)
+            times = 1;
+        if (buffer->in[0] == '0')
+            j = 0, times = 1;
+        char cmd[16];
+        int k = j;
+        while (k < l && isalpha(buffer->in[k]))
+            k++;
+        if (k == j)
+            k++;
+        if (buffer->in[0] == '0')
+            k = 1;
+        memcpy(cmd, buffer->in + j, k - j);
+        cmd[k - j] = 0;
+        //if (j < l)
+        {
+            printf("\"%s\"\n", cmd);
+            int adv = 0;
+            int invalid = 0;
+            if (cmd[0] == 'g')
+            {
+                if (cmd[1] == 'g')
+                {
+                    buffer->cursor_pos = get_pos_from_line_and_col(buffer, times - 1, 0); 
+                    adv = 2;
+                }
+                else if (cmd[1])
+                    invalid = 1, adv = 1;
+            }
+            else if (cmd[0] == 'G')
+            {
+                int l = get_line_count(buffer);
+                buffer->cursor_pos = get_pos_from_line_and_col(buffer, l - 1, 0);
+                adv = 1;
+            }
+            else if (cmd[0] == '$')
+            {
+                while (buffer->cursor_pos + 1 < buffer->size && 
+                        buffer->data[buffer->cursor_pos + 1] != '\n')
+                    buffer->cursor_pos++;
+                adv = 1; 
+            }
+            else if (!strcmp(cmd, "0"))
+            {
+                while (buffer->cursor_pos > 0 && buffer->data[buffer->cursor_pos - 1] != '\n')
+                    buffer->cursor_pos--;
+                adv = 1;
+            }
+            else if (cmd[0] == 'k')
+            {
+                move_cursor(buffer, UP, times);
+                adv = 1;
+            }
+            else if (cmd[0] == 'j') 
+            {
+                move_cursor(buffer, DOWN, times);
+                adv = 1;
+            }
+            else if (cmd[0] == 'h')
+            {
+                move_cursor(buffer, LEFT, times);
+                adv = 1;
+            }
+            else if (cmd[0] == 'l')
+            {
+                move_cursor(buffer, RIGHT, times);
+                adv = 1;
+            }
+            else if (cmd[0] == 'H')
+            {
+                int line, col;
+                get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+                int l = buffer->scroll_y / font_line_height;
+                buffer->cursor_pos = get_pos_from_line_and_col(buffer, l, 0);
+                adv = 1;
+            }
+            else if (cmd[0] == 'L')
+            {
+                int line, col;
+                get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+                int l = (buffer->scroll_y + text_height) / font_line_height;
+                buffer->cursor_pos = get_pos_from_line_and_col(buffer, l - 1, 0);               
+                adv = 1;
+            }
+            else if (cmd[0] == 'x')
+            {
+                if (buffer->cursor_pos + 1 < buffer->size)
+                {
+                    Command c = {.type = Command_Erase, .erase_range_start = buffer->cursor_pos,
+                                 .erase_range_end = buffer->cursor_pos,
+                                .cursor_pos_after = buffer->cursor_pos};
+                    do_command(buffer, &c);
+                }
+                adv = 1;
+            }
+            else if (cmd[0] == 'd')
+            {
+                int start = -1, end = -1, new_pos = buffer->cursor_pos;
+                if (cmd[1] == 'd')
+                {
+                    int line, col;
+                    get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
+                    start = get_pos_from_line_and_col(buffer, line, 0);
+                    end = get_pos_from_line_and_col(buffer, line + times, 0) - 1;
+                    new_pos = start;
+                    adv = 2;
+                }
+                if (adv)
+                {
+                    Command c = {.type = Command_Erase, .erase_range_start = start, .erase_range_end = end,
+                                .cursor_pos_after = new_pos};
+                    do_command(buffer, &c);
+                }
+                else if (cmd[1]) // invalid skip
+                    adv = 2, invalid = 1;
+            }
+            else if (cmd[0] == 'u')
+            {
+                for (int i = 0; i < times; i++)
+                    undo_last_command(buffer);
+                adv = 1;
+            }
+            else if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_R])
+            {
+                for (int i = 0; i < times; i++)
+                    redo_last_command(buffer);
+            }
+            else if (cmd[0] == ':')
+            {
+                switch_to_command_mode = 1;
+                adv = 1;
+            }
+            else if (cmd[0])
+                invalid = 1, adv = 1;
+            if (invalid)
+                printf("INVALID COMMAND: \"%s\"\n", cmd);
+            if (adv)
+                memmove(buffer->in, buffer->in + j + adv, l - (j + adv) + 1);
+        }
+    }
+    if (buffer->mode == MODE_COMMAND)
+        update_buffer_insert_mode(buffer->cmd_buffer, input);
+    else if (insert)
+        update_buffer_insert_mode(buffer, input);
+    assert(buffer->cursor_pos >= 0 && buffer->cursor_pos < buffer->size);
+    //
+    //rendering
+    //
+    //
+    const int line_count = get_line_count(buffer);
+
+    const int line_numbers_width = uint_len(line_count) * font_advance_x + 15;
+    const int text_offset_x = line_numbers_width; 
+    const float dt = 1.0f / 60;
+
+    //clear the screen
+    for (int y = 0; y < draw_image->height; y++)
+        memset(draw_image->pixels + y * draw_image->pitch, 0x22, draw_image->width * 4);
+
 
     int cursor_y, cursor_x;
-    get_line_and_col_from_pos(buffer, wb->cursor_pos, &cursor_y, &cursor_x);
-
+    get_line_and_col_from_pos(buffer, buffer->cursor_pos, &cursor_y, &cursor_x);
     int cursor_visual_y = cursor_y;
     int cursor_visual_x = cursor_x;
-    for (int i = wb->cursor_pos - 1; i >= 0 && buffer->data[i] != '\n'; i--)
+    for (int i = buffer->cursor_pos - 1; i >= 0 && buffer->data[i] != '\n'; i--)
     {
         if (buffer->data[i] == '\t')
             cursor_visual_x += TAB_SIZE - 1;
     }
 
-    float ddy = input->mouse_scroll_y * 10000 - wb->scroll_dy * 4;
-    wb->scroll_y += ddy * 0.5f * dt * dt + dt * wb->scroll_dy;
-    wb->scroll_dy += ddy * dt;
+    float ddy = input->mouse_scroll_y * 10000 - buffer->scroll_dy * 4;
+    buffer->scroll_y += ddy * 0.5f * dt * dt + dt * buffer->scroll_dy;
+    buffer->scroll_dy += ddy * dt;
 
-    //TODO: make these work smooth like the mouse
-    int cursor_moved = (wb->cursor_pos != wb->cursor_prev_pos);
+    //todo: make these work smooth like the mouse
+    int cursor_moved = (buffer->cursor_pos != buffer->cursor_prev_pos);
 
-    if (cursor_moved && cursor_visual_y * font_line_height >= wb->scroll_y + screen_buffer->height)
+    if (cursor_moved && cursor_visual_y * font_line_height >= buffer->scroll_y + text_height)
     {
-        wb->scroll_y = (cursor_visual_y + 1) * font_line_height - screen_buffer->height;
+        buffer->scroll_y = (cursor_visual_y + 1) * font_line_height - text_height;
     }
-    if (cursor_moved && cursor_visual_y * font_line_height < wb->scroll_y)
+    if (cursor_moved && cursor_visual_y * font_line_height < buffer->scroll_y)
     {
-        wb->scroll_y = cursor_visual_y * font_line_height;
+        buffer->scroll_y = cursor_visual_y * font_line_height;
     }
-    if (cursor_moved && cursor_visual_x * font_advance_x >= wb->scroll_x + screen_buffer->width)
+    if (cursor_moved && cursor_visual_x * font_advance_x >= buffer->scroll_x + draw_image->width - line_numbers_width)
     {
-        wb->scroll_x = (cursor_visual_x + 1) * font_advance_x - screen_buffer->width;
+        buffer->scroll_x = (cursor_visual_x + 1) * font_advance_x - (draw_image->width - line_numbers_width);
     }
-    if (cursor_moved && cursor_visual_x * font_advance_x < wb->scroll_x)
+    if (cursor_moved && cursor_visual_x * font_advance_x < buffer->scroll_x)
     {
-        wb->scroll_x = cursor_visual_x * font_advance_x;
+        buffer->scroll_x = cursor_visual_x * font_advance_x;
     }
-    if (wb->scroll_y < 0)
-        wb->scroll_y = 0, wb->scroll_dy = 0;
-    if (wb->scroll_x < 0)
-        wb->scroll_x = 0;
-    if (line_count * font_line_height < screen_buffer->height)
-        wb->scroll_y = 0, wb->scroll_dy = 0;
-    else if (wb->scroll_y + screen_buffer->height > line_count * font_line_height)
+    if (buffer->scroll_y < 0)
+        buffer->scroll_y = 0, buffer->scroll_dy = 0;
+    if (buffer->scroll_x < 0)
+        buffer->scroll_x = 0;
+    if (line_count * font_line_height < text_height)
+        buffer->scroll_y = 0, buffer->scroll_dy = 0;
+    else if (buffer->scroll_y + text_height > line_count * font_line_height)
     {
-        wb->scroll_y = line_count * font_line_height  - screen_buffer->height;
-        wb->scroll_dy = 0;
+        buffer->scroll_y = line_count * font_line_height  - text_height;
+        buffer->scroll_dy = 0;
     }
+#if 1
+    { // make cursor follow mouse scroll
+        int cursor_y, cursor_x;
+        get_line_and_col_from_pos(buffer, buffer->cursor_pos, &cursor_y, &cursor_x);
+        int first = buffer->scroll_y / font_line_height;
+        int last =  (buffer->scroll_y + text_height) / font_line_height;
+        if (cursor_y < first)
+        {
+            buffer->cursor_pos = get_pos_from_line_and_col(buffer, first + 1, cursor_x);
+        }
+        if (cursor_y > last)
+        {
+            buffer->cursor_pos = get_pos_from_line_and_col(buffer, last - 1, cursor_x);
+        }
+        get_line_and_col_from_pos(buffer, buffer->cursor_pos, &cursor_y, &cursor_x);
+        cursor_visual_y = cursor_y;
+        cursor_visual_x = cursor_x;
+        for (int i = buffer->cursor_pos - 1; i >= 0 && buffer->data[i] != '\n'; i--)
+        {
+            if (buffer->data[i] == '\t')
+                cursor_visual_x += TAB_SIZE - 1;
+        }
+    }
+#endif
+
+
+    const int first_line = (buffer->scroll_y) / font_line_height;
+    const int last_line = clamp(0, first_line + (draw_image->height / font_line_height) + 1, line_count);
     //draw the cursor
-    if (wb->is_active)
+    if (buffer->mode != MODE_COMMAND)
     {
         float cursor_w = font_advance_x;
         float cursor_h = font_line_height;
-        float r = 0.1, g = 0.7, b = 0;
-#if 0
-        if (wb->mode == MODE_INSERT)
+        float r = 0.9, g = 0.6, b = 0;
+        if (insert)
         {
-            cursor_w *= 0.25f;
-            cursor_h *= 0.8;
             r = 0.1, g = 0.7, b = 0;
+            cursor_w *= 0.25f;
         }
-#endif
-        int min_x = cursor_visual_x * font_advance_x - wb->scroll_x;
-        int min_y = cursor_visual_y * font_line_height - wb->scroll_y;
-        draw_rect(screen_buffer, min_x, min_y, min_x + cursor_w, min_y + cursor_h, r, g, b, 1);
+        int min_x = cursor_visual_x * font_advance_x - buffer->scroll_x + text_offset_x;
+        int min_y = cursor_visual_y * font_line_height - buffer->scroll_y;
+        draw_rect(draw_image, min_x, min_y, min_x + cursor_w, min_y + cursor_h, r, g, b, 1);
     }
-    int first_line = (wb->scroll_y) / font_line_height;
-    int last_line = first_line + (screen_buffer->height / font_line_height) + 2;
 
     //draw the text
-
-    if (wb->is_cmd)
-    {
-        if (wb->is_active)
-        {
-            draw_text(screen_buffer, buffer->data, 0, 0, 1, 1, 1);
-        }
-    }
-    else
     {
         int string_c = 0;
         int inside_oneline_comment = 0;
         int inside_multiline_comment = 0;
+
         int line = first_line;
-        float y = first_line * font_line_height - wb->scroll_y;
-        float x = -wb->scroll_x;
+        float y = first_line * font_line_height - buffer->scroll_y;
+        float x = -buffer->scroll_x + text_offset_x;
         int i = get_pos_from_line_and_col(buffer, first_line, 0);
         for (; line <= last_line && buffer->data[i];)
         {
@@ -831,7 +995,7 @@ void draw_window_buffer(Image *screen_buffer, Window_Buffer *wb, Input *input)
             if (buffer->data[i] == '\n')
             {
                 y += font_line_height;
-                x = -wb->scroll_x;
+                x = -buffer->scroll_x + text_offset_x;
                 inside_oneline_comment = 0;
                 i++;
                 line++;
@@ -840,26 +1004,26 @@ void draw_window_buffer(Image *screen_buffer, Window_Buffer *wb, Input *input)
             {
                 for (int j = 0; j < TAB_SIZE; j++)
                 {
-                    draw_char(screen_buffer, ' ', x, y, 1, 1, 1);
+                    draw_char(draw_image, ' ', x, y, 1, 1, 1);
                     x += font_advance_x;
                 }
                 i++;
             }
             else if (buffer->data[i] == ' ')
             {
-                draw_char(screen_buffer, ' ', x, y, 1, 1, 1);
+                draw_char(draw_image, ' ', x, y, 1, 1, 1);
                 x += font_advance_x;
                 i++;
             }
             else if (inside_comment)
             {
-                draw_char(screen_buffer, buffer->data[i], x, y, 0.5, 0.5, 0.5);
+                draw_char(draw_image, buffer->data[i], x, y, 0.5, 0.5, 0.5);
                 i++;
                 x += font_advance_x;
             }
             else if (string_c % 2 || buffer->data[i] == '"')
             {
-                draw_char(screen_buffer, buffer->data[i], x, y, 0, 0.6, 0.1);
+                draw_char(draw_image, buffer->data[i], x, y, 0, 0.6, 0.1);
                 i++;
                 x += font_advance_x;
             }
@@ -867,7 +1031,7 @@ void draw_window_buffer(Image *screen_buffer, Window_Buffer *wb, Input *input)
             {
                 while (isdigit(buffer->data[i]))
                 {
-                    draw_char(screen_buffer, buffer->data[i], x, y, 0.8, 0.3, 0.8);
+                    draw_char(draw_image, buffer->data[i], x, y, 0.8, 0.3, 0.8);
                     i++;
                     x += font_advance_x;
                 }
@@ -892,42 +1056,41 @@ void draw_window_buffer(Image *screen_buffer, Window_Buffer *wb, Input *input)
                     r = 0.9, g = 0.7, b = 0;
                 while (is_identifier(buffer->data[i]))
                 {
-                    draw_char(screen_buffer, buffer->data[i], x, y, r, g, b);
+                    draw_char(draw_image, buffer->data[i], x, y, r, g, b);
                     i++;
                     x += font_advance_x;
                 }
             }
             else
             {
-                draw_char(screen_buffer, buffer->data[i], x, y, 0, 1, 1);
+                draw_char(draw_image, buffer->data[i], x, y, 0, 1, 1);
                 x += font_advance_x;
                 i++;
             }
         }
     }
-
-    // draw the window->selection
-    if (wb->selection)
+    // draw the buffer->selection
+    if (buffer->selection)
     {
         int line = first_line;
-        float y = first_line * font_line_height - wb->scroll_y;
-        float x = -wb->scroll_x;
+        float y = first_line * font_line_height - buffer->scroll_y;
+        float x = -buffer->scroll_x + text_offset_x;
         int i = get_pos_from_line_and_col(buffer, first_line, 0);
         for (; buffer->data[i] && line <= last_line; i++)
         {
-            if ((i >= wb->selection_start_pos && i < wb->selection_end_pos) ||
-                (i >= wb->selection_end_pos && i < wb->selection_start_pos))
+            if ((i >= buffer->selection_start_pos && i < buffer->selection_end_pos) ||
+                (i >= buffer->selection_end_pos && i < buffer->selection_start_pos))
             {
                 int max_x = x + font_advance_x;
                 if (buffer->data[i] == '\t')
                     max_x = x + font_advance_x * TAB_SIZE;
-                draw_rect(screen_buffer, x, y, max_x, y + font_line_height,
+                draw_rect(draw_image, x, y, max_x, y + font_line_height,
                           0.1, 0.5, 0.1, 0.4);
             }
             if (buffer->data[i] == '\n')
             {
                 y += font_line_height;
-                x = -wb->scroll_x;
+                x = -buffer->scroll_x + text_offset_x;
                 line++;
             }
             else
@@ -939,102 +1102,18 @@ void draw_window_buffer(Image *screen_buffer, Window_Buffer *wb, Input *input)
             }
         }
     }
-    wb->cursor_prev_pos = wb->cursor_pos;
-}
-
-
-void update_and_render_window(Window *window, Image *screen_buffer, Input *input)
-{
-    int line_count = get_line_count(window->text_buffer.buffer); // these should get computed after update?
-    int filebar_height = font_line_height;
-    int commandbar_height = 0;//font_line_height;
-    int line_numbers_width = uint_len(line_count) * font_advance_x + 15;
-    int text_height = screen_buffer->height - commandbar_height - filebar_height;
-    //clear the screen
-    for (int y = 0; y < screen_buffer->height; y++)
-        memset(screen_buffer->pixels + y * screen_buffer->pitch, 0x22, screen_buffer->width * 4);
-#if 0
-    if (window->command_buffer.is_active && input->is_pressed[SDL_SCANCODE_ESCAPE])
-    {
-        window->command_buffer.is_active = 0;
-        window->text_buffer.is_active = 1;
-        window->text_buffer.mode = MODE_NORMAL;
-    }
-    if (!window->command_buffer.is_active && window->text_buffer.mode == MODE_NORMAL
-            && input->text[0] == ':') 
-    {
-        Buffer *buffer = window->command_buffer.buffer;
-        free(buffer->data);
-        input->text = "";
-        buffer->data = calloc(1, 1);
-        buffer->size = 1;
-        buffer->undo_count = 0;
-        buffer->redo_count = 0;
-        window->command_buffer.is_active = 1;
-        window->command_buffer.cursor_pos = 0;
-        window->text_buffer.is_active = 0;
-    }
-#endif
-
-    int is_pressed[512] = {0};
-    {
-        Input in = {0};
-        if (window->text_buffer.is_active)
-        {
-            in = *input; 
-        }
-        else
-        {
-            in.text = "";
-            in.is_pressed = is_pressed;
-        }
-        in.mouse_x = input->mouse_x - line_numbers_width;
-        in.mouse_prev_x = input->mouse_prev_x - line_numbers_width;
-        Image img;
-        img.width = screen_buffer->width - line_numbers_width;
-        img.height = text_height;
-        img.pitch = screen_buffer->pitch;
-        img.pixels = screen_buffer->pixels + line_numbers_width;
-        update_window_buffer(&window->text_buffer, &in);
-        draw_window_buffer(&img, &window->text_buffer, &in);
-    }
-    {
-        Input in = {0};
-        if (window->command_buffer.is_active)
-        {
-            in = *input;
-        }
-        else
-        {
-            in.text = "";
-            in.is_pressed = is_pressed;
-        }
-        in.mouse_y = input->mouse_y - (screen_buffer->height - commandbar_height);
-        in.mouse_prev_y = input->mouse_prev_y - (screen_buffer->height - commandbar_height);
-        Image img;
-        img.width = screen_buffer->width;
-        img.height = commandbar_height;
-        img.pitch = screen_buffer->pitch;
-        img.pixels = screen_buffer->pixels + (screen_buffer->height - img.height) * img.pitch;
-        update_window_buffer(&window->command_buffer, &in);
-        draw_window_buffer(&img, &window->command_buffer, &in);
-    }
 #if 1
     //draw line numbers
     {
-        int first_line = (window->text_buffer.scroll_y) / font_line_height;
-        int last_line = first_line + (screen_buffer->height / font_line_height) + 1;
-        line_count = get_line_count(window->text_buffer.buffer); // might be changed from last time
-        if (last_line > line_count)
-            last_line = line_count;
+        draw_rect(draw_image, 0, 0, line_numbers_width, draw_image->height, 0.13, 0.13, 0.13, 1);
         int line = first_line;
         int max_d = uint_len(line_count) * font_advance_x;
         for (int line = first_line; line <= last_line; line++)
         {
             char s[10];
             sprintf(s, "%d", line);
-            float y = (line - 1) * font_line_height - window->text_buffer.scroll_y;
-            draw_text(screen_buffer, s, 5 + max_d - strlen(s) * font_advance_x, y, 
+            float y = (line - 1) * font_line_height - buffer->scroll_y;
+            draw_text(draw_image, s, 5 + max_d - strlen(s) * font_advance_x, y, 
                         0.7, 0.7, 0.7);
         }
     }
@@ -1042,41 +1121,70 @@ void update_and_render_window(Window *window, Image *screen_buffer, Input *input
 
     // file status
     {
-        Buffer *buffer = window->text_buffer.buffer;
         int min_y = text_height;
-        draw_rect(screen_buffer, 0, min_y,
-                  screen_buffer->width, min_y + filebar_height, 0.2, 0.3, 0.3, 1);
+        draw_rect(draw_image, 0, min_y,
+                  draw_image->width, min_y + filebar_height, 0.2, 0.3, 0.3, 1);
         char buf[256];
         sprintf(buf, "%s", buffer->filename);
-        draw_text(screen_buffer, buf, 0, min_y, 1, 1, 1);
-
+        draw_text(draw_image, buf, 0, min_y, 1, 1, 1);
         int line, col;
-        get_line_and_col_from_pos(buffer, window->text_buffer.cursor_pos, &line, &col);
+        get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
         int line_count = get_line_count(buffer);
-        int scroll_percent = ((float)(window->text_buffer.scroll_y) / (line_count * font_line_height)) * 100;
+        int scroll_percent = ((float)(buffer->scroll_y) / (line_count * font_line_height)) * 100;
         sprintf(buf, "%d,%d    %d%%\n", line + 1, col + 1, scroll_percent);
 
-        draw_text(screen_buffer, buf, screen_buffer->width - strlen(buf) * font_advance_x,
+        draw_text(draw_image, buf, draw_image->width - strlen(buf) * font_advance_x,
                   min_y, 1, 1, 1);
     }
-#if 0
-    if (window == active_window && test_image_count)
+    // command bar
     {
-        int w = screen_buffer->width;
-        int h = screen_buffer->height;
-        int min_x = screen_buffer->width - w - 10 - window->text_buffer.scroll_x;
-        int min_y = -window->text_buffer.scroll_y;
+        int min_y = draw_image->height - commandbar_height;
+        draw_rect(draw_image, 0, min_y, draw_image->width, draw_image->height, 0, 0, 0, 1);
+
+        if (buffer->mode == MODE_COMMAND)
+        {
+            float cursor_w = font_advance_x;
+            float cursor_h = font_line_height;
+            float r = 0.8, g = 0.8, b = 0.8;
+            int cursor_x, cursor_y;
+            get_line_and_col_from_pos(buffer->cmd_buffer, buffer->cmd_buffer->cursor_pos, &cursor_y, &cursor_x);
+            int x = cursor_x * font_advance_x + font_advance_x;
+            int y = min_y + cursor_y  * font_line_height;
+
+            draw_text(draw_image, ":", 0, min_y, 1, 1, 1);
+            draw_text(draw_image, buffer->cmd_buffer->data, font_advance_x, min_y, 1, 1, 1);
+
+            draw_rect(draw_image, x, y, x + cursor_w, y + cursor_h, r, g, b, 0.5);
+        }
+        draw_text(draw_image, buffer->in, draw_image->width - strlen(buffer->in) * font_advance_x - 40, 
+                min_y, 1, 1, 1);
+
+    }
+#if 0
+    if (buffer == active_buffer && test_image_count)
+    {
+        int w = draw_image->width;
+        int h = draw_image->height;
+        int min_x = draw_image->width - w - 10 - buffer->text_buffer.scroll_x;
+        int min_y = -buffer->text_buffer.scroll_y;
         min_x = 0;
         min_y = 0;
         int max_x = min_x + w;
         int max_y = min_y + h;
         static int frame = 0;
-        draw_image(screen_buffer, &test_image[(frame / 2) % test_image_count], min_x, min_y, max_x, max_y, 0.2);
+        draw_image(draw_image, &test_image[(frame / 2) % test_image_count], min_x, min_y, max_x, max_y, 0.2);
         frame++;
     }
 #endif
+    if (switch_to_command_mode) // why?
+    {
+        buffer->mode = MODE_COMMAND;
+    }
+    buffer->cursor_prev_pos = buffer->cursor_pos;
+    
 }
-void update_and_render_the_editor(Image *screen_buffer, Input *input)
+
+void update_and_render_the_editor(Image *draw_image, Input *input)
 {
     static int first_frame = 1;
 
@@ -1085,37 +1193,26 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
         buffers[0].filename = "test";
         buffers[0].data = load_entire_file(buffers[0].filename);
         buffers[0].size = strlen(buffers[0].data) + 1;
-
+        buffers[0].min_x = 5;
+        buffers[0].max_x = draw_image->width  - 5;
+        buffers[0].min_y = 5;
+        buffers[0].max_y = draw_image->height - 5;
 
         buffers[1].filename = "code/main.c";
         buffers[1].data = load_entire_file(buffers[1].filename);
         buffers[1].size = strlen(buffers[1].data) + 1;
+        buffers[1].min_x = buffers[0].max_x;
+        buffers[1].max_x = draw_image->width - 5;
+        buffers[1].min_y = buffers[0].min_y;
+        buffers[1].max_y = buffers[0].max_y;
 
         buffers[2].filename = "command buffer";
         buffers[2].data = calloc(1, 1);
-        buffers[2].size = strlen(buffers[2].data) + 1;
-        buffers[3].filename = "command buffer";
-        buffers[3].data = calloc(1, 1);
-        buffers[3].size = strlen(buffers[3].data) + 1;
-        
-        windows[0].text_buffer.buffer = &buffers[0];
-        windows[0].text_buffer.is_active = 1;
-        windows[0].command_buffer.buffer = &buffers[2];
-        windows[0].command_buffer.is_cmd = 1;
-        windows[0].min_x = 5;
-        windows[0].max_x = screen_buffer->width / 2 - 5;
-        windows[0].min_y = 5;
-        windows[0].max_y = screen_buffer->height - 5;
-#if 1
-        windows[1].text_buffer.buffer = &buffers[1];
-        windows[1].text_buffer.is_active = 1;
-        windows[1].command_buffer.buffer = &buffers[3];
-        windows[1].command_buffer.is_cmd = 1;
-        windows[1].min_x = windows[0].max_x;
-        windows[1].max_x = screen_buffer->width - 5;
-        windows[1].min_y = windows[0].min_y;
-        windows[1].max_y = windows[0].max_y;
-#endif
+        buffers[2].size = 1;
+
+        buffers[2].text_buffer = &buffers[0];
+        buffers[0].cmd_buffer = &buffers[2];
+
         // TODO: when I load this it takes some time and mouse input become broken
 #if 0
         Image cow_image = load_image("cow.png");
@@ -1123,7 +1220,7 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
         test_image_count = 36;
         for (int j = 0; j < test_image_count; j++)
         {
-            test_image[j] = image_window(&cow_image, 300 * j + 100, 50, 200, cow_image.height - 50);
+            test_image[j] = image_buffer(&cow_image, 300 * j + 100, 50, 200, cow_image.height - 50);
         }
 #endif
         stbtt_fontinfo info;
@@ -1176,65 +1273,67 @@ void update_and_render_the_editor(Image *screen_buffer, Input *input)
             stbtt_MakeCodepointBitmap(&info, font_bitmaps[c] + byteOffset, w, h, font_advance_x, scale, scale, c);
         }
         first_frame = 0;
-        active_window = &windows[0];
+        active_buffer = &buffers[0];
         free(font_contents);
     }
+
+    memset(draw_image->pixels, 0, draw_image->pitch * draw_image->height * 4);
+
     clock_t t = clock();
-#if 1
+#if 0
     if (input->is_mouse_left_button_pressed)
     {
-        for (int i = 0; i < window_count; i++)
+        for (int i = 0; i < buffer_count; i++)
         {
-            Window *window = &windows[i];
-            if (input->mouse_x >= window->min_x && input->mouse_x < window->max_x &&
-                input->mouse_y >= window->min_y && input->mouse_y < window->max_y)
+            Buffer *buffer = &buffers[i];
+            if (input->mouse_x >= buffer->min_x && input->mouse_x < buffer->max_x &&
+                input->mouse_y >= buffer->min_y && input->mouse_y < buffer->max_y)
             {
-                active_window = window;
+                active_buffer = buffer;
                 break;
             }
         }
     }
 #endif
-    memset(screen_buffer->pixels, 0, screen_buffer->pitch * screen_buffer->height * 4);
-    for (int i = 0; i < window_count; i++)
+
+    for (int i = 0; i < buffer_count; i++)
     {
-        Window *window = &windows[i];
+        Buffer *buffer = &buffers[i];
 
         Image img;
-        img.width = window->max_x - window->min_x;
-        img.height = window->max_y - window->min_y;
-        img.pixels = screen_buffer->pixels + window->min_y * screen_buffer->pitch + window->min_x;
-        img.pitch = screen_buffer->pitch;
+        img.width = buffer->max_x - buffer->min_x;
+        img.height = buffer->max_y - buffer->min_y;
+        img.pixels = draw_image->pixels + buffer->min_y * draw_image->pitch + buffer->min_x;
+        img.pitch = draw_image->pitch;
 
-        Input window_input = {0};
+        Input buffer_input = {0};
         int is_pressed[512] = {0};
 
-        if (window == active_window)
+        if (buffer == active_buffer)
         {
-            window_input = *input;
-
+            buffer_input = *input;
         }
         else
         {
-//            window->text_buselection = 0;
-//           window->new_selection = 0;
-            window_input.text = "";
-            window_input.is_pressed = is_pressed;
+            buffer->selection = 0;
+            buffer->new_selection = 0;
+            buffer_input.text = "";
+            buffer_input.is_pressed = is_pressed;
         }
-        window_input.dt = input->dt;
-        window_input.mouse_x = input->mouse_x - window->min_x;
-        window_input.mouse_y = input->mouse_y - window->min_y;
-        window_input.mouse_prev_x = input->mouse_prev_x - window->min_x;
-        window_input.mouse_prev_y = input->mouse_prev_y - window->min_y;
-        update_and_render_window(window, &img, &window_input);
-        if (window == active_window)
-            draw_rect_outline(screen_buffer, window->min_x, window->min_y,
-                              window->max_x, window->max_y, 1, 1, 0, 0, 1);
+        buffer_input.dt = input->dt;
+        buffer_input.mouse_x = input->mouse_x - buffer->min_x;
+        buffer_input.mouse_y = input->mouse_y - buffer->min_y;
+        buffer_input.mouse_prev_x = input->mouse_prev_x - buffer->min_x;
+        buffer_input.mouse_prev_y = input->mouse_prev_y - buffer->min_y;
+        update_and_render_buffer(buffer, &img, &buffer_input);
+        if (buffer == active_buffer)
+            draw_rect_outline(draw_image, buffer->min_x, buffer->min_y,
+                              buffer->max_x, buffer->max_y, 1, 1, 0, 0, 1);
     }
     t = clock() - t;
     int ms = roundf((double)t / CLOCKS_PER_SEC * 1000.0f);
     char buf[32];
     sprintf(buf, "%d", ms);
-    draw_text(screen_buffer, buf, screen_buffer->width - strlen(buf) * font_advance_x,
+    draw_text(draw_image, buf, draw_image->width - strlen(buf) * font_advance_x,
                 0, 1, 1, 1);
 }

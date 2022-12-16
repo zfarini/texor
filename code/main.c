@@ -10,12 +10,16 @@
 
 #define array_length(arr) (sizeof(arr) / sizeof(*(arr)))
 
+static int should_quit;
+
 typedef struct Image {
     int width;
     int height;
     int pitch;
 	uint32_t *pixels;
 } Image;
+
+Image *g_screen_buffer;
 
 Image load_image(char *filename)
 {
@@ -82,7 +86,13 @@ char *load_entire_file(char *filename)
     return result;
 }
 
+#include "texor.h"
+
+//void parse(Image *draw_image, Buffer *buffer, int mouse_scroll);
+
 #include "texor.c"
+
+//#include "parse.c"
 
 int main(void)
 {
@@ -108,10 +118,10 @@ int main(void)
     back_buffer.pixels = calloc(back_buffer.width * back_buffer.height * sizeof(uint32_t), 1);
     assert(back_buffer.pixels);
     assert(window && renderer && screen_texture);
-
+    g_screen_buffer = &back_buffer;
     Input input = {0};
 
-    while (1)
+    while (!should_quit)
     {
         char input_text[16];
         input_text[0] = 0;
@@ -127,7 +137,6 @@ int main(void)
             }
             else if (ev.type == SDL_TEXTINPUT)
             {
-                assert(strlen(ev.text.text) == 1); // this seems to always work?
                 memcpy(input.text + strlen(input.text), ev.text.text, strlen(ev.text.text) + 1);
             }
             else if (ev.type == SDL_KEYDOWN || ev.type == SDL_KEYUP)
