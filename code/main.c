@@ -88,6 +88,7 @@ char *load_entire_file(char *filename)
 
 #include "texor.h"
 
+#include "draw.c"
 //void parse(Image *draw_image, Buffer *buffer, int mouse_scroll);
 
 #include "texor.c"

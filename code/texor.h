@@ -27,13 +27,11 @@ typedef struct Command {
 
 typedef struct Buffer Buffer;
 
-
-typedef enum {
+enum {
     MODE_NORMAL,
     MODE_INSERT,
-    MODE_VISUAL,
     MODE_COMMAND,
-} Vim_Mode;
+};
 
 enum {
     LEFT,
@@ -42,7 +40,7 @@ enum {
     DOWN
 };
 
-struct Buffer { // this will be shared by multiple buffers
+struct Buffer {
     char *data;
     int size; // this includes \0
     char *filename;
@@ -63,14 +61,14 @@ struct Buffer { // this will be shared by multiple buffers
     int max_x;
     int min_y;
     int max_y;
-    int mode;
-    int text_mode;
-    int switch_to_normal_mode;
     Buffer *text_buffer;
-    char in[16];
     Buffer *cmd_buffer;
-    int saved;
+    int switch_to_normal_mode;
+    int mode;
+    char in[16];
+    char status[256];
 };
+
 
 typedef struct Input {
     char *text;
