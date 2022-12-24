@@ -28,12 +28,6 @@ typedef struct Command {
 typedef struct Buffer Buffer;
 
 enum {
-    MODE_NORMAL,
-    MODE_INSERT,
-    MODE_COMMAND,
-};
-
-enum {
     LEFT,
     RIGHT,
     UP,
@@ -57,16 +51,11 @@ struct Buffer {
     int new_selection;
     int cursor_pos;
     int cursor_prev_pos;
+    int marker_pos;
     int min_x;
     int max_x;
     int min_y;
     int max_y;
-    Buffer *text_buffer;
-    Buffer *cmd_buffer;
-    int switch_to_normal_mode;
-    int mode;
-    char in[16];
-    char status[256];
 };
 
 

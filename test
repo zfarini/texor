@@ -2,28 +2,22 @@ static const char *c_keywords[] = {"auto", "break", "case", "char", "const", "co
                            "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register",
                            "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
                            "unsigned", "void", "volatile", "while"};
-static int font_line_height;
-static int font_advance_x;
-static uint8_t *font_bitmaps[256];
-
 static char *clipboard;
+
 static Image test_image[64];
 static int test_image_count;
 
-static Buffer buffers[8];
+static Buffer buffers[32];
+static Buffer cmd_buffers[32];
 static Buffer *active_buffer;
-static int buffer_count = 1;
+static int buffer_count;
+static int cmd_buffer_count;
 
 void swap(int *x, int *y)
 {
     int temp = *x;
     *x = *y;
     *y = temp;
-}
-
-float lerp(float a, float t, float b)
-{
-    return a + t * (b - a);
 }
 
 int clamp(int min, int x, int max)
@@ -61,195 +55,25 @@ int get_line_count(Buffer *buffer)
     return result;
 }
 
-Image image_buffer(Image *image, int xoffset, int yoffset, int width, int height)
-{
-    Image result = {
-        .width = width,
-        .height = height,
-        .pitch = image->pitch,
-        .pixels = image->pixels + (yoffset * image->pitch) + xoffset,
-    };
-    return result;
-}
-
-void draw_image(Image *draw_image, Image *img, int min_x, int min_y, int max_x, int max_y, float a)
-{
-    if (max_x == min_x || max_y == min_y)
-        return ;
-    float start_x = min_x;
-    float start_y = min_y;
-    float xdiv = 1.0f / (max_x - min_x);
-    float ydiv = 1.0f / (max_y - min_y);
-
-    if (min_x < 0)
-        min_x = 0;
-    if (min_y < 0)
-        min_y = 0;
-    if (max_x > draw_image->width)
-        max_x = draw_image->width;
-    if (max_y > draw_image->height)
-        max_y = draw_image->height;
-    uint32_t *row = draw_image->pixels + min_y * draw_image->pitch + min_x;
-    for (int y = min_y; y < max_y; y++)
-    {
-        uint32_t *dest_pixel = (uint32_t *)row;
-        for (int x = min_x; x < max_x; x++)
-        {
-            int src_x = ((float)(x - start_x) * xdiv) * img->width;
-            int src_y = ((float)(y - start_y) * ydiv) * img->height;
-            uint32_t s = img->pixels[src_y * img->pitch + src_x];
-            uint32_t d = *dest_pixel;
-            const float one_over_255 = 1.0f / 255.0f;
-            float sr = ((s >> 24) & 0xFF) * one_over_255;
-            float sg = ((s >> 16) & 0xFF) * one_over_255;
-            float sb = ((s >> 8) & 0xFF) * one_over_255;
-            float sa = ((s >> 0) & 0xFF) * one_over_255 * a;
-
-            float dr = ((d >> 24) & 0xFF) * one_over_255;
-            float dg = ((d >> 16) & 0xFF) * one_over_255;
-            float db = ((d >> 8) & 0xFF) * one_over_255;
-
-            uint32_t r = (uint32_t)((dr + (sr - dr) * sa) * 255 + 0.5f);
-            uint32_t g = (uint32_t)((dg + (sg - dg) * sa) * 255 + 0.5f);
-            uint32_t b = (uint32_t)((db + (sb - db) * sa) * 255 + 0.5f);
-            *dest_pixel = (r << 24) | (g << 16) | (b << 8);
-            dest_pixel++;
-        }
-        row += draw_image->pitch;
-    }
-}
-
-void draw_rect(Image *draw_image, int min_x, int min_y, int max_x, int max_y,
-               float r, float g, float b, float a)
-{
-    if (min_x < 0) min_x = 0;
-    if (min_y < 0) min_y = 0;
-    if (max_x > draw_image->width) max_x = draw_image->width;
-    if (max_y > draw_image->height) max_y = draw_image->height;
-
-    uint32_t *row = draw_image->pixels + min_y * draw_image->pitch + min_x;
-    for (int y = min_y; y < max_y; y++)
-    {
-        uint32_t *pixel = row;
-        for (int x = min_x; x < max_x; x++)
-        {
-            uint32_t p = *pixel;
-            float dr = ((p >> 24) & 0xFF) / 255.0f;
-            float dg = ((p >> 16) & 0xFF) / 255.0f;
-            float db = ((p >> 8) & 0xFF) / 255.0f;
-            
-            dr = (1 - a) * dr + a * r;
-            dg = (1 - a) * dg + a * g;
-            db = (1 - a) * db + a * b;
-
-            *pixel = ((uint32_t)(dr * 255 + 0.5f) << 24) |
-                     ((uint32_t)(dg * 255 + 0.5f) << 16) |
-                     ((uint32_t)(db * 255 + 0.5f) << 8);
-            pixel++;
-        }
-        row += draw_image->pitch;
-    }
-}
-
-void draw_rect_outline(Image *draw_image, int min_x, int min_y, int max_x, int max_y,
-        int thickness, float r, float g, float b, float a)
-{
-    draw_rect(draw_image, min_x, min_y, min_x + thickness, max_y, r, g, b, a);
-    draw_rect(draw_image, min_x, min_y, max_x, min_y + thickness, r, g, b, a);
-    draw_rect(draw_image, min_x, max_y - thickness, max_x, max_y, r, g, b, a);
-    draw_rect(draw_image, max_x - thickness, min_y, max_x, max_y, r, g, b, a);
-}
-
-//TODO: kerning, antialiasing?
-void draw_char(Image *draw_image, int c, int min_x, int min_y, float fr, float fg, float fb)
-{
-    if (c < 32 || c >= 127)
-    {
-        draw_rect(draw_image, min_x, min_y, min_x + font_advance_x,
-                  min_y + font_line_height, 1, 0, 1, 1);
-        return;
-    }
-    int init_min_x = min_x;
-    int init_min_y = min_y;
-    int max_x = min_x + font_advance_x;
-    int max_y = min_y + font_line_height;
-
-    if (min_x < 0) min_x = 0;
-    if (min_y < 0) min_y = 0;
-    if (max_x > draw_image->width) max_x = draw_image->width;
-    if (max_y > draw_image->height) max_y = draw_image->height;
-
-    uint32_t *row = draw_image->pixels + min_y * draw_image->pitch + min_x;
-    uint8_t *src_row = &font_bitmaps[c][(min_y - init_min_y)  * font_advance_x + (min_x - init_min_x)];
-    for (int y = min_y; y < max_y; y++)
-    {
-        uint32_t *pixel = row;
-        uint8_t *src_pixel = src_row;
-        for (int x = min_x; x < max_x; x++)
-        {
-            uint8_t grey = *src_pixel++;
-            float a = grey / 255.0f;
-            uint32_t p = *pixel;
-            float dr = ((p >> 24) & 0xFF) / 255.0f;
-            float dg = ((p >> 16) & 0xFF) / 255.0f;
-            float db = ((p >> 8) & 0xFF) / 255.0f;
-            dr = (1 - a) * dr + a * fr;
-            dg = (1 - a) * dg + a * fg;
-            db = (1 - a) * db + a * fb;
-            *pixel = ((uint32_t)(dr * 255 + 0.5f) << 24) |
-                     ((uint32_t)(dg * 255 + 0.5f) << 16) |
-                     ((uint32_t)(db * 255 + 0.5f) << 8);
-            pixel++;
-        }
-        src_row += font_advance_x;
-        row += draw_image->pitch;
-    }
-}
-
-void draw_text(Image *draw_image, char *s, int min_x, int min_y, float fr, float fg, float fb)
-{
-    float x = min_x;
-    float y = min_y;
-    for (int i = 0; s[i]; i++)
-    {
-        if (s[i] == '\n')
-        {
-            y += font_line_height;
-            x = min_x;
-        }
-        else if (s[i] == '\t')
-        {
-            for (int j = 0; j < TAB_SIZE; j++)
-            {
-                draw_char(draw_image, ' ', x, y, fr, fg, fb);
-                x += font_advance_x;
-            }
-        }
-        else
-        {
-            draw_char(draw_image, s[i], x, y, fr, fg, fb);
-            x += font_advance_x;
-        }
-    }
-}
-
-
 void get_line_and_col_from_pos(Buffer *buffer, int pos, int *line, int *col)
 {
-    *line = 0;
-    *col = 0;
+    int l = 0, c = 0;
     for (int i = 0; buffer->data[i]; i++)
     {
         if (i == pos)
             break;
         if (buffer->data[i] == '\n')
         {
-            *line = *line + 1;
-            *col = 0;
+            l++;
+            c = 0;
         }
         else
-            *col = *col + 1;
+            c++;
     }
+    if (line)
+        *line = l;
+    if (col)
+        *col = c;
 }
 
 int get_pos_from_line_and_col(Buffer *buffer, int line, int col)
@@ -258,7 +82,6 @@ int get_pos_from_line_and_col(Buffer *buffer, int line, int col)
         return 0;
     if (col < 0)
         col = 0;
-    //find line start and add to it col? + clamp it
     int curr_line = 0;
     for (int i = 0; buffer->data[i]; i++)
     {
@@ -273,7 +96,6 @@ int get_pos_from_line_and_col(Buffer *buffer, int line, int col)
         }
         if (buffer->data[i] == '\n')
             curr_line++;
-
     }
     return buffer->size - 1;
 }
@@ -282,7 +104,10 @@ int visual_col_to_text_col(Buffer *buffer, int line, int visual_col)
 {
     int line_start = get_pos_from_line_and_col(buffer, line, 0);
     if (line_start >= buffer->size)
-        return buffer->size;
+    {
+        assert(0); // ???
+        return buffer->size - 1;
+    }
     int c = 0;
     int text_col = visual_col;
     for (int i = line_start; buffer->data[i] && c < visual_col; i++)
@@ -323,7 +148,6 @@ int screen_pos_to_buffer_pos(Buffer *buffer, int screen_x, int screen_y)
 {
     int line = (screen_y + buffer->scroll_y) / font_line_height;
     int col = (screen_x + buffer->scroll_x) / font_advance_x;
-    //decrease col by something?
     int line_start = get_pos_from_line_and_col(buffer, line, 0);
     if (line_start >= buffer->size)
         return buffer->size;
@@ -382,15 +206,47 @@ void do_text_command(Buffer *buffer, char *cmd)
 {
     if (!strcmp(cmd, "q"))
         should_quit = 1;
-    if (!strcmp(cmd, "w"))
+    else if (!strcmp(cmd, "w"))
     {
         FILE *file = fopen(buffer->filename, "w");
         if (file)
         {
             fwrite(buffer->data, buffer->size - 1, 1, file);
             fclose(file);
+
+            sprintf(buffer->status, "\"%s\" %dL, %dB written", buffer->filename, 
+                    get_line_count(buffer), buffer->size - 1);
         }
-        
+        else
+            sprintf(buffer->status, "Failed to save file \"%s\"", buffer->filename);
+    }
+    else if (!strcmp(cmd, "vs"))
+    {
+#if 0
+        Buffer *new_buffer = &buffers[buffer_count++];
+        Buffer *cmd_buffer = &cmd_buffers[cmd_buffer_count++];
+        memset(new_buffer, 0, sizeof(*new_buffer));
+        memset(cmd_buffer, 0, sizeof(*cmd_buffer));
+        new_buffer->cmd_buffer = cmd_buffer;
+        cmd_buffer->text_buffer = new_buffer;
+
+        new_buffer->filename = buffer->filename;
+        new_buffer->data = strdup(buffer->data);
+        new_buffer->size = buffer->size;
+        cmd_buffer->filename = "command buffer";
+        cmd_buffer->data = calloc(1, 1);
+        cmd_buffer->size = 1;
+
+        new_buffer->max_x = buffer->max_x;
+        buffer->max_x = (buffer->max_x - buffer->min_x) / 2;
+        new_buffer->min_x = buffer->max_x;
+        new_buffer->min_y = buffer->min_y;
+        new_buffer->max_y = buffer->max_y;
+#endif
+    }
+    else
+    {
+        strcpy(buffer->status, "Not an editor command");
     }
 }
 
@@ -450,7 +306,6 @@ void do_command_(Buffer *buffer, Command *command, int redo)
     buffer->cursor_pos = c->cursor_pos_after;
 }
 
-
 void do_command(Buffer *buffer, Command *command)
 {
     do_command_(buffer, command, 0);
@@ -496,10 +351,8 @@ void redo_last_command(Buffer *buffer)
     buffer->selection = 0;
 }
 
-
 void update_buffer_insert_mode(Buffer *buffer, Input *input)
 {
-
     int cursor_save_pos = buffer->cursor_pos;
     //hack
     int temp_offset_x = uint_len(get_line_count(buffer)) * font_advance_x + 15;
@@ -602,7 +455,7 @@ void update_buffer_insert_mode(Buffer *buffer, Input *input)
     }
     if (buffer->selection)
     {
-    int pos_start = buffer->selection_start_pos;
+        int pos_start = buffer->selection_start_pos;
         int pos_end = buffer->selection_end_pos;
         if (pos_start > pos_end)
             swap(&pos_start, &pos_end);
@@ -710,7 +563,6 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     }
     if (normal)
     {
-        // 5j?
         memcpy(buffer->in + strlen(buffer->in), input->text, strlen(input->text) + 1);
         int l = strlen(buffer->in); 
         int p = 1, j = 0;
@@ -744,7 +596,7 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
                     buffer->cursor_pos = get_pos_from_line_and_col(buffer, times - 1, 0); 
                     adv = 2;
                 }
-                else
+                else if (cmd[1])
                     invalid = 1, adv = 1;
             }
             else if (cmd[0] == 'G')
@@ -833,6 +685,8 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
                 }
                 else if (cmd[1]) // invalid skip
                     adv = 2, invalid = 1;
+                if (buffer->cursor_pos >= buffer->size)
+                    buffer->cursor_pos = buffer->size - 1;
             }
             else if (cmd[0] == 'u')
             {
@@ -868,7 +722,6 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     //
     //
     const int line_count = get_line_count(buffer);
-
     const int line_numbers_width = uint_len(line_count) * font_advance_x + 15;
     const int text_offset_x = line_numbers_width; 
     const float dt = 1.0f / 60;
@@ -877,16 +730,10 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     for (int y = 0; y < draw_image->height; y++)
         memset(draw_image->pixels + y * draw_image->pitch, 0x22, draw_image->width * 4);
 
-
     int cursor_y, cursor_x;
     get_line_and_col_from_pos(buffer, buffer->cursor_pos, &cursor_y, &cursor_x);
     int cursor_visual_y = cursor_y;
-    int cursor_visual_x = cursor_x;
-    for (int i = buffer->cursor_pos - 1; i >= 0 && buffer->data[i] != '\n'; i--)
-    {
-        if (buffer->data[i] == '\t')
-            cursor_visual_x += TAB_SIZE - 1;
-    }
+    int cursor_visual_x = text_col_to_visual_col(buffer, cursor_y, cursor_x);
 
     float ddy = input->mouse_scroll_y * 10000 - buffer->scroll_dy * 4;
     buffer->scroll_y += ddy * 0.5f * dt * dt + dt * buffer->scroll_dy;
@@ -938,16 +785,9 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
         }
         get_line_and_col_from_pos(buffer, buffer->cursor_pos, &cursor_y, &cursor_x);
         cursor_visual_y = cursor_y;
-        cursor_visual_x = cursor_x;
-        for (int i = buffer->cursor_pos - 1; i >= 0 && buffer->data[i] != '\n'; i--)
-        {
-            if (buffer->data[i] == '\t')
-                cursor_visual_x += TAB_SIZE - 1;
-        }
+        cursor_visual_x = text_col_to_visual_col(buffer, cursor_y, cursor_x);
     }
 #endif
-
-
     const int first_line = (buffer->scroll_y) / font_line_height;
     const int last_line = clamp(0, first_line + (draw_image->height / font_line_height) + 1, line_count);
     //draw the cursor
@@ -1156,7 +996,8 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
         }
         draw_text(draw_image, buffer->in, draw_image->width - strlen(buffer->in) * font_advance_x - 40, 
                 min_y, 1, 1, 1);
-
+        if (buffer->mode != MODE_COMMAND)
+            draw_text(draw_image, buffer->status, 0, min_y, 1, 1, 1);
     }
 #if 0
     if (buffer == active_buffer && test_image_count)
@@ -1177,6 +1018,7 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     if (switch_to_command_mode) // why?
     {
         buffer->mode = MODE_COMMAND;
+        buffer->status[0] = 0;
     }
     buffer->cursor_prev_pos = buffer->cursor_pos;
     
@@ -1192,25 +1034,17 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
         buffers[0].data = load_entire_file(buffers[0].filename);
         buffers[0].size = strlen(buffers[0].data) + 1;
         buffers[0].min_x = 5;
-        buffers[0].max_x = draw_image->width  - 5;
+        buffers[0].max_x = draw_image->width - 5;
         buffers[0].min_y = 5;
         buffers[0].max_y = draw_image->height - 5;
+        buffer_count++;
 
-        buffers[1].filename = "code/main.c";
-        buffers[1].data = load_entire_file(buffers[1].filename);
-        buffers[1].size = strlen(buffers[1].data) + 1;
-        buffers[1].min_x = buffers[0].max_x;
-        buffers[1].max_x = draw_image->width - 5;
-        buffers[1].min_y = buffers[0].min_y;
-        buffers[1].max_y = buffers[0].max_y;
-
-        buffers[2].filename = "command buffer";
-        buffers[2].data = calloc(1, 1);
-        buffers[2].size = 1;
-
-        buffers[2].text_buffer = &buffers[0];
-        buffers[0].cmd_buffer = &buffers[2];
-
+        cmd_buffers[0].filename = "command buffer";
+        cmd_buffers[0].data = calloc(1, 1);
+        cmd_buffers[0].size = 1;
+        cmd_buffers[0].text_buffer = &buffers[0];
+        buffers[0].cmd_buffer = &cmd_buffers[0];
+        cmd_buffer_count++;
         // TODO: when I load this it takes some time and mouse input become broken
 #if 0
         Image cow_image = load_image("cow.png");
@@ -1236,7 +1070,7 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
 
         if (!stbtt_InitFont(&info, font_contents, 0))
             assert(0);
-        font_line_height = 20;
+        font_line_height = 18;
         float scale = stbtt_ScaleForPixelHeight(&info, font_line_height);
 
         int ascent, descent, lineGap;
@@ -1278,8 +1112,8 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
     memset(draw_image->pixels, 0, draw_image->pitch * draw_image->height * 4);
 
     clock_t t = clock();
-#if 0
-    if (input->is_mouse_left_button_pressed)
+#if 1
+    if (input->is_mouse_left_button_pressed && (!active_buffer || !active_buffer->selection))
     {
         for (int i = 0; i < buffer_count; i++)
         {
@@ -1317,6 +1151,7 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
             buffer->new_selection = 0;
             buffer_input.text = "";
             buffer_input.is_pressed = is_pressed;
+
         }
         buffer_input.dt = input->dt;
         buffer_input.mouse_x = input->mouse_x - buffer->min_x;

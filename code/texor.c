@@ -171,85 +171,6 @@ void buffer_erase_range(Buffer *buffer, int start, int end) // end is included
     buffer->data = realloc(buffer->data, buffer->size);// we don't have to do this?
 }
 
-void move_cursor(Buffer *buffer, int dir, int times)
-{
-    int line, col;
-    get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
-    if (dir == UP || dir == DOWN)
-    {
-        int visual_col = text_col_to_visual_col(buffer, line, col);
-        if (dir == UP)
-        {
-            int c = visual_col_to_text_col(buffer, line - times, visual_col);
-            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line - times, c);
-        }
-        else
-        {
-            int c = visual_col_to_text_col(buffer, line + times, visual_col);
-            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line + times, c);
-        }
-    }
-    else if (dir == LEFT)
-    {
-        buffer->cursor_pos = get_pos_from_line_and_col(buffer, line, col - times);
-    }
-    else if (dir == RIGHT)
-    {
-        buffer->cursor_pos = get_pos_from_line_and_col(buffer, line, col + times);
-        if (buffer->data[buffer->cursor_pos] == '\n' &&
-                buffer->cursor_pos && buffer->data[buffer->cursor_pos - 1] != '\n')
-            buffer->cursor_pos--;
-    }   
-}
-
-void do_text_command(Buffer *buffer, char *cmd)
-{
-    if (!strcmp(cmd, "q"))
-        should_quit = 1;
-    else if (!strcmp(cmd, "w"))
-    {
-        FILE *file = fopen(buffer->filename, "w");
-        if (file)
-        {
-            fwrite(buffer->data, buffer->size - 1, 1, file);
-            fclose(file);
-
-            sprintf(buffer->status, "\"%s\" %dL, %dB written", buffer->filename, 
-                    get_line_count(buffer), buffer->size - 1);
-        }
-        else
-            sprintf(buffer->status, "Failed to save file \"%s\"", buffer->filename);
-    }
-    else if (!strcmp(cmd, "vs"))
-    {
-#if 0
-        Buffer *new_buffer = &buffers[buffer_count++];
-        Buffer *cmd_buffer = &cmd_buffers[cmd_buffer_count++];
-        memset(new_buffer, 0, sizeof(*new_buffer));
-        memset(cmd_buffer, 0, sizeof(*cmd_buffer));
-        new_buffer->cmd_buffer = cmd_buffer;
-        cmd_buffer->text_buffer = new_buffer;
-
-        new_buffer->filename = buffer->filename;
-        new_buffer->data = strdup(buffer->data);
-        new_buffer->size = buffer->size;
-        cmd_buffer->filename = "command buffer";
-        cmd_buffer->data = calloc(1, 1);
-        cmd_buffer->size = 1;
-
-        new_buffer->max_x = buffer->max_x;
-        buffer->max_x = (buffer->max_x - buffer->min_x) / 2;
-        new_buffer->min_x = buffer->max_x;
-        new_buffer->min_y = buffer->min_y;
-        new_buffer->max_y = buffer->max_y;
-#endif
-    }
-    else
-    {
-        strcpy(buffer->status, "Not an editor command");
-    }
-}
-
 void do_command_(Buffer *buffer, Command *command, int redo)
 {
     assert(buffer->undo_count < (int)array_length(buffer->undo));
@@ -351,8 +272,20 @@ void redo_last_command(Buffer *buffer)
     buffer->selection = 0;
 }
 
-void update_buffer_insert_mode(Buffer *buffer, Input *input)
+
+void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
 {
+    assert(buffer->cursor_pos >= 0 && buffer->cursor_pos < buffer->size);
+
+    int filebar_height = font_line_height;
+    int commandbar_height = font_line_height * 2;
+    int text_height = draw_image->height - commandbar_height - filebar_height;
+    
+    int d = text_height - (text_height / font_line_height) * font_line_height;
+    text_height -= d;
+    assert(text_height % font_line_height == 0);
+    commandbar_height += d;
+
     int cursor_save_pos = buffer->cursor_pos;
     //hack
     int temp_offset_x = uint_len(get_line_count(buffer)) * font_advance_x + 15;
@@ -395,32 +328,24 @@ void update_buffer_insert_mode(Buffer *buffer, Input *input)
     }
     if (input->is_pressed[SDL_SCANCODE_RETURN])
     {
-        if (buffer->text_buffer)
-        {
-            do_text_command(buffer->text_buffer, buffer->data);
-            buffer->text_buffer->switch_to_normal_mode = 1;
-        }
-        else
-        {
-            int i = buffer->cursor_pos;
-            if (buffer->data[i] == '\n')
-                i--;
-            while (i >= 0 && buffer->data[i] != '\n')
-                i--;
+        int i = buffer->cursor_pos;
+        if (buffer->data[i] == '\n')
+            i--;
+        while (i >= 0 && buffer->data[i] != '\n')
+            i--;
+        i++;
+        int start = i;
+        while (i < buffer->cursor_pos && (buffer->data[i] == ' ' || buffer->data[i] == '\t'))
             i++;
-            int start = i;
-            while (i < buffer->cursor_pos && (buffer->data[i] == ' ' || buffer->data[i] == '\t'))
-                i++;
-            printf("%d %d\n", i, start);
-            char *s = malloc(i - start + 2); // @leak
-            s[0] = '\n';
-            memcpy(s + 1, buffer->data + start, i - start);
-            s[i - start + 1] = 0;
-            Command c = {.type = Command_Insert, .inserted_text = s, .inserted_text_len = strlen(s),
-                         .insertion_pos = buffer->cursor_pos,
-                        .cursor_pos_after = buffer->cursor_pos + strlen(s)};
-            do_command(buffer, &c);
-        }
+        printf("%d %d\n", i, start);
+        char *s = malloc(i - start + 2); // @leak
+        s[0] = '\n';
+        memcpy(s + 1, buffer->data + start, i - start);
+        s[i - start + 1] = 0;
+        Command c = {.type = Command_Insert, .inserted_text = s, .inserted_text_len = strlen(s),
+                     .insertion_pos = buffer->cursor_pos,
+                    .cursor_pos_after = buffer->cursor_pos + strlen(s)};
+        do_command(buffer, &c);
     }
     if (input->is_pressed[SDL_SCANCODE_BACKSPACE] && !buffer->selection && buffer->cursor_pos)
     {
@@ -431,8 +356,14 @@ void update_buffer_insert_mode(Buffer *buffer, Input *input)
     }
     if (cursor_save_pos != buffer->cursor_pos)
         buffer->selection = 0;
-
+    if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_SPACE])
+        buffer->marker_pos = buffer->cursor_pos;
     int mouse_moved = (input->mouse_x != input->mouse_prev_x) || (input->mouse_y != input->mouse_prev_y);
+    if (input->is_mouse_left_button_pressed)//&& !buffer->selection)
+    {
+        buffer->cursor_pos = mouse_pos;
+    }
+#if 0
     if (input->is_mouse_left_button_pressed && mouse_moved)
     {
         if (!buffer->selection || buffer->new_selection)
@@ -453,10 +384,13 @@ void update_buffer_insert_mode(Buffer *buffer, Input *input)
         buffer->selection_start_pos = 0;
         buffer->selection_end_pos = buffer->size - 1;
     }
-    if (buffer->selection)
+#endif
+    //if (buffer->selection)
     {
         int pos_start = buffer->selection_start_pos;
         int pos_end = buffer->selection_end_pos;
+        pos_start = buffer->marker_pos;
+        pos_end = buffer->cursor_pos;
         if (pos_start > pos_end)
             swap(&pos_start, &pos_end);
         int len = pos_end - pos_start;
@@ -469,14 +403,18 @@ void update_buffer_insert_mode(Buffer *buffer, Input *input)
             clipboard[len] = 0;
             //printf("clipboard: \"%s\"\n", clipboard);
         }
-        if ((input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_X]) ||
-            input->is_pressed[SDL_SCANCODE_BACKSPACE] || input->text[0])
+//        if ((input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_X]) ||
+  //          input->is_pressed[SDL_SCANCODE_BACKSPACE] || input->text[0])
+        if (input->is_control_key_pressed && (input->is_pressed[SDL_SCANCODE_X] 
+                || input->is_pressed[SDL_SCANCODE_D]))
         {
             assert(pos_end >= pos_start);
             Command c = {.type = Command_Erase, .erase_range_start = pos_start,
                         .erase_range_end = pos_end - 1,
                         .cursor_pos_after = pos_start};
             do_command(buffer, &c);
+            if (buffer->marker_pos > buffer->cursor_pos)
+                buffer->marker_pos = buffer->cursor_pos;
             buffer->selection = 0;
         }
     }
@@ -502,220 +440,7 @@ void update_buffer_insert_mode(Buffer *buffer, Input *input)
             do_command(buffer, &c);
         }
     }
-}
 
-void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
-{
-    assert(buffer->cursor_pos >= 0 && buffer->cursor_pos < buffer->size);
-
-    int filebar_height = font_line_height;
-    int commandbar_height = font_line_height * 2;
-    int text_height = draw_image->height - commandbar_height - filebar_height;
-    
-    int d = text_height - (text_height / font_line_height) * font_line_height;
-    text_height -= d;
-    assert(text_height % font_line_height == 0);
-    commandbar_height += d;
-
-    if (input->is_pressed[SDL_SCANCODE_ESCAPE] || buffer->switch_to_normal_mode)
-    {
-        buffer->mode = MODE_NORMAL;
-        input->text[0] = 0; // is this possible?
-        buffer->in[0] = 0;
-        free(buffer->cmd_buffer->data);
-        memset(buffer->cmd_buffer, 0, sizeof(*buffer->cmd_buffer));
-        buffer->cmd_buffer->data = calloc(1, 1);
-        buffer->cmd_buffer->size = 1;
-        buffer->cmd_buffer->text_buffer = buffer;
-        buffer->switch_to_normal_mode = 0;
-        buffer->selection = 0;
-    }
-    if (buffer->mode == MODE_NORMAL && 
-            (input->is_pressed[SDL_SCANCODE_I] || input->is_pressed[SDL_SCANCODE_A] ||
-             input->is_pressed[SDL_SCANCODE_O]))
-    {
-        buffer->mode = MODE_INSERT;
-        input->text[0] = 0;
-        if (input->is_pressed[SDL_SCANCODE_A])
-        {
-            if (buffer->data[buffer->cursor_pos] != '\n')
-                buffer->cursor_pos++;
-        }
-        else if (input->is_pressed[SDL_SCANCODE_O])
-        {
-            int line, col;
-            get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
-            buffer->cursor_pos = get_pos_from_line_and_col(buffer, line + 1, 0);
-            //got to the next lien with the same indentation
-        }
-    }
-    int normal = (buffer->mode == MODE_NORMAL);
-    int insert = (buffer->mode == MODE_INSERT || buffer->mode == MODE_COMMAND);
-    int switch_to_command_mode = 0;
-    // normal & insert mode
-    //hack
-    int temp_offset_x = uint_len(get_line_count(buffer)) * font_advance_x + 15;
-    int mouse_pos = screen_pos_to_buffer_pos(buffer, input->mouse_x - temp_offset_x, input->mouse_y);
-    int mouse_prev_pos = screen_pos_to_buffer_pos(buffer, input->mouse_prev_x - temp_offset_x, input->mouse_prev_y);
-    if (input->is_mouse_left_button_pressed)//&& !buffer->selection)
-    {
-        buffer->cursor_pos = mouse_pos;
-    }
-    if (normal)
-    {
-        memcpy(buffer->in + strlen(buffer->in), input->text, strlen(input->text) + 1);
-        int l = strlen(buffer->in); 
-        int p = 1, j = 0;
-        while (j < l && isdigit(buffer->in[j]))
-            j++;
-        int times = atoi(buffer->in);
-        int num = (times > 0);
-        if (times <= 0)
-            times = 1;
-        if (buffer->in[0] == '0')
-            j = 0, times = 1;
-        char cmd[16];
-        int k = j;
-        while (k < l && isalpha(buffer->in[k]))
-            k++;
-        if (k == j)
-            k++;
-        if (buffer->in[0] == '0')
-            k = 1;
-        memcpy(cmd, buffer->in + j, k - j);
-        cmd[k - j] = 0;
-        //if (j < l)
-        {
-            printf("\"%s\"\n", cmd);
-            int adv = 0;
-            int invalid = 0;
-            if (cmd[0] == 'g')
-            {
-                if (cmd[1] == 'g')
-                {
-                    buffer->cursor_pos = get_pos_from_line_and_col(buffer, times - 1, 0); 
-                    adv = 2;
-                }
-                else if (cmd[1])
-                    invalid = 1, adv = 1;
-            }
-            else if (cmd[0] == 'G')
-            {
-                int l = get_line_count(buffer);
-                buffer->cursor_pos = get_pos_from_line_and_col(buffer, l - 1, 0);
-                adv = 1;
-            }
-            else if (cmd[0] == '$')
-            {
-                while (buffer->cursor_pos + 1 < buffer->size && 
-                        buffer->data[buffer->cursor_pos + 1] != '\n')
-                    buffer->cursor_pos++;
-                adv = 1; 
-            }
-            else if (!strcmp(cmd, "0"))
-            {
-                while (buffer->cursor_pos > 0 && buffer->data[buffer->cursor_pos - 1] != '\n')
-                    buffer->cursor_pos--;
-                adv = 1;
-            }
-            else if (cmd[0] == 'k')
-            {
-                move_cursor(buffer, UP, times);
-                adv = 1;
-            }
-            else if (cmd[0] == 'j') 
-            {
-                move_cursor(buffer, DOWN, times);
-                adv = 1;
-            }
-            else if (cmd[0] == 'h')
-            {
-                move_cursor(buffer, LEFT, times);
-                adv = 1;
-            }
-            else if (cmd[0] == 'l')
-            {
-                move_cursor(buffer, RIGHT, times);
-                adv = 1;
-            }
-            else if (cmd[0] == 'H')
-            {
-                int line, col;
-                get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
-                int l = buffer->scroll_y / font_line_height;
-                buffer->cursor_pos = get_pos_from_line_and_col(buffer, l, 0);
-                adv = 1;
-            }
-            else if (cmd[0] == 'L')
-            {
-                int line, col;
-                get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
-                int l = (buffer->scroll_y + text_height) / font_line_height;
-                buffer->cursor_pos = get_pos_from_line_and_col(buffer, l - 1, 0);               
-                adv = 1;
-            }
-            else if (cmd[0] == 'x')
-            {
-                if (buffer->cursor_pos + 1 < buffer->size)
-                {
-                    Command c = {.type = Command_Erase, .erase_range_start = buffer->cursor_pos,
-                                 .erase_range_end = buffer->cursor_pos,
-                                .cursor_pos_after = buffer->cursor_pos};
-                    do_command(buffer, &c);
-                }
-                adv = 1;
-            }
-            else if (cmd[0] == 'd')
-            {
-                int start = -1, end = -1, new_pos = buffer->cursor_pos;
-                if (cmd[1] == 'd')
-                {
-                    int line, col;
-                    get_line_and_col_from_pos(buffer, buffer->cursor_pos, &line, &col);
-                    start = get_pos_from_line_and_col(buffer, line, 0);
-                    end = get_pos_from_line_and_col(buffer, line + times, 0) - 1;
-                    new_pos = start;
-                    adv = 2;
-                }
-                if (adv)
-                {
-                    Command c = {.type = Command_Erase, .erase_range_start = start, .erase_range_end = end,
-                                .cursor_pos_after = new_pos};
-                    do_command(buffer, &c);
-                }
-                else if (cmd[1]) // invalid skip
-                    adv = 2, invalid = 1;
-                if (buffer->cursor_pos >= buffer->size)
-                    buffer->cursor_pos = buffer->size - 1;
-            }
-            else if (cmd[0] == 'u')
-            {
-                for (int i = 0; i < times; i++)
-                    undo_last_command(buffer);
-                adv = 1;
-            }
-            else if (input->is_control_key_pressed && input->is_pressed[SDL_SCANCODE_R])
-            {
-                for (int i = 0; i < times; i++)
-                    redo_last_command(buffer);
-            }
-            else if (cmd[0] == ':')
-            {
-                switch_to_command_mode = 1;
-                adv = 1;
-            }
-            else if (cmd[0])
-                invalid = 1, adv = 1;
-            if (invalid)
-                printf("INVALID COMMAND: \"%s\"\n", cmd);
-            if (adv)
-                memmove(buffer->in, buffer->in + j + adv, l - (j + adv) + 1);
-        }
-    }
-    if (buffer->mode == MODE_COMMAND)
-        update_buffer_insert_mode(buffer->cmd_buffer, input);
-    else if (insert)
-        update_buffer_insert_mode(buffer, input);
     assert(buffer->cursor_pos >= 0 && buffer->cursor_pos < buffer->size);
     //
     //rendering
@@ -791,19 +516,21 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     const int first_line = (buffer->scroll_y) / font_line_height;
     const int last_line = clamp(0, first_line + (draw_image->height / font_line_height) + 1, line_count);
     //draw the cursor
-    if (buffer->mode != MODE_COMMAND)
     {
         float cursor_w = font_advance_x;
         float cursor_h = font_line_height;
         float r = 0.9, g = 0.6, b = 0;
-        if (insert)
-        {
-            r = 0.1, g = 0.7, b = 0;
-            cursor_w *= 0.25f;
-        }
+
         int min_x = cursor_visual_x * font_advance_x - buffer->scroll_x + text_offset_x;
         int min_y = cursor_visual_y * font_line_height - buffer->scroll_y;
         draw_rect(draw_image, min_x, min_y, min_x + cursor_w, min_y + cursor_h, r, g, b, 1);
+    
+        int marker_y, marker_x;
+        get_line_and_col_from_pos(buffer, buffer->marker_pos, &marker_y, &marker_x);
+        marker_x = text_col_to_visual_col(buffer, marker_y, marker_x);
+        min_x = marker_x * font_advance_x - buffer->scroll_x + text_offset_x;
+        min_y = marker_y * font_line_height - buffer->scroll_y;       
+        draw_rect_outline(draw_image, min_x, min_y, min_x + cursor_w, min_y + cursor_h, 1, 1, 0, 0, 1);
     }
 
     //draw the text
@@ -978,26 +705,7 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     {
         int min_y = draw_image->height - commandbar_height;
         draw_rect(draw_image, 0, min_y, draw_image->width, draw_image->height, 0, 0, 0, 1);
-
-        if (buffer->mode == MODE_COMMAND)
-        {
-            float cursor_w = font_advance_x;
-            float cursor_h = font_line_height;
-            float r = 0.8, g = 0.8, b = 0.8;
-            int cursor_x, cursor_y;
-            get_line_and_col_from_pos(buffer->cmd_buffer, buffer->cmd_buffer->cursor_pos, &cursor_y, &cursor_x);
-            int x = cursor_x * font_advance_x + font_advance_x;
-            int y = min_y + cursor_y  * font_line_height;
-
-            draw_text(draw_image, ":", 0, min_y, 1, 1, 1);
-            draw_text(draw_image, buffer->cmd_buffer->data, font_advance_x, min_y, 1, 1, 1);
-
-            draw_rect(draw_image, x, y, x + cursor_w, y + cursor_h, r, g, b, 0.5);
-        }
-        draw_text(draw_image, buffer->in, draw_image->width - strlen(buffer->in) * font_advance_x - 40, 
-                min_y, 1, 1, 1);
-        if (buffer->mode != MODE_COMMAND)
-            draw_text(draw_image, buffer->status, 0, min_y, 1, 1, 1);
+        draw_text(draw_image, "empty for now", 0, min_y, 1, 1, 1);
     }
 #if 0
     if (buffer == active_buffer && test_image_count)
@@ -1015,11 +723,6 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
         frame++;
     }
 #endif
-    if (switch_to_command_mode) // why?
-    {
-        buffer->mode = MODE_COMMAND;
-        buffer->status[0] = 0;
-    }
     buffer->cursor_prev_pos = buffer->cursor_pos;
     
 }
@@ -1039,12 +742,6 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
         buffers[0].max_y = draw_image->height - 5;
         buffer_count++;
 
-        cmd_buffers[0].filename = "command buffer";
-        cmd_buffers[0].data = calloc(1, 1);
-        cmd_buffers[0].size = 1;
-        cmd_buffers[0].text_buffer = &buffers[0];
-        buffers[0].cmd_buffer = &cmd_buffers[0];
-        cmd_buffer_count++;
         // TODO: when I load this it takes some time and mouse input become broken
 #if 0
         Image cow_image = load_image("cow.png");
