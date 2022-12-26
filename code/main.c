@@ -1,6 +1,8 @@
 #include <math.h>
 #include <assert.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "SDL/SDL.h"
 #define STBI_ONLY_PNG
 #define STB_IMAGE_IMPLEMENTATION
@@ -8,7 +10,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
-#define array_length(arr) (sizeof(arr) / sizeof(*(arr)))
+#define array_length(arr) ((int)(sizeof(arr) / sizeof(*(arr))))
 
 static int should_quit;
 
@@ -89,17 +91,17 @@ char *load_entire_file(char *filename)
 #include "texor.h"
 
 #include "draw.c"
-//void parse(Image *draw_image, Buffer *buffer, int mouse_scroll);
+void parse(Image *draw_image, Buffer *buffer, int mouse_scroll);
 
 #include "texor.c"
 
-//#include "parse.c"
+#include "parse.c"
 
 int main(void)
 {
     Image back_buffer = {
-        .width = 960,
-        .height = 540,
+        .width = 1280,
+        .height = 960,
     };
     back_buffer.pitch = back_buffer.width;
     int window_width = back_buffer.width;
@@ -133,9 +135,7 @@ int main(void)
         while (SDL_PollEvent(&ev))
         {
             if (ev.type == SDL_QUIT)
-            {
-                return 0;
-            }
+                should_quit = 1;
             else if (ev.type == SDL_TEXTINPUT)
             {
                 memcpy(input.text + strlen(input.text), ev.text.text, strlen(ev.text.text) + 1);
@@ -145,6 +145,8 @@ int main(void)
                 int is_down = (ev.type == SDL_KEYDOWN);
 
                 SDL_Keycode code = ev.key.keysym.sym;
+                if (code == SDLK_ESCAPE)
+                    should_quit = 1;
                 if (code == SDLK_TAB && is_down)
                     memcpy(input.text + strlen(input.text), "\t", 2);
                 if (code == SDLK_LCTRL)

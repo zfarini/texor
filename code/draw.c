@@ -152,18 +152,13 @@ void draw_char(Image *draw_image, int c, int min_x, int min_y, float fr, float f
     }
 }
 
-void draw_text(Image *draw_image, char *s, int min_x, int min_y, float fr, float fg, float fb)
+int draw_text(Image *draw_image, char *s, int min_x, int min_y, float fr, float fg, float fb)
 {
     float x = min_x;
     float y = min_y;
     for (int i = 0; s[i]; i++)
     {
-        if (s[i] == '\n')
-        {
-            y += font_line_height;
-            x = min_x;
-        }
-        else if (s[i] == '\t')
+        if (s[i] == '\t')
         {
             for (int j = 0; j < TAB_SIZE; j++)
             {
@@ -177,5 +172,5 @@ void draw_text(Image *draw_image, char *s, int min_x, int min_y, float fr, float
             x += font_advance_x;
         }
     }
+    return (x - min_x);
 }
-

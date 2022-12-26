@@ -1,0 +1,14 @@
+add : (x, y)
+{
+	x + y
+}
+
+mul : (x, y)
+{
+    x * y
+}
+
+c = add(2, 3)
+
+print(c)
+print(mul(c, 2))

@@ -174,6 +174,38 @@ Node *parse_mul();
 Node *parse_unary();
 Node *parse_lit();
 
+Node *parse_block()
+{
+    Node *node = make_node(NODE_BLOCK);
+  
+    node->scope = make_scope(curr_scope);
+    curr_scope = node->scope;
+
+    Node *curr = node;
+    skip_token('{');
+    while (tokens[curr_token].type != '}' && tokens[curr_token].type)
+    {
+        Node *c; 
+#if 0
+        if (tokens[curr_token].type == TOKEN_WHILE)
+        {
+            curr_token++;
+            c = make_node(NODE_WHILE);
+            c->condition = parse_expr();
+            c->body = parse_block();
+        }
+        else
+#endif
+            c = parse_expr();
+        curr->next = c;
+        curr = curr->next;
+    }
+    curr->next = 0;
+    skip_token('}');
+    curr_scope = curr_scope->parent;
+    return node;
+}
+
 Node *parse_func_decl()
 {
     Node *node = make_node(NODE_FUNC_DECL);
@@ -209,27 +241,8 @@ Node *parse_func_decl()
         curr_token++;
     }
     skip_token(')');
-    skip_token('{');
 
-    node->body = make_node(NODE_BLOCK);
-    Node *curr = node->body;
-    while (tokens[curr_token].type != '}' && tokens[curr_token].type)
-    {
-#if 0
-        if (tokens[curr_token].type == TOKEN_WHILE)
-        {
-            Node *loop = make_node(NODE_WHILE);
-            loop->token = &tokens[curr_token];
-            curr_token++;
-            loop->condition = parse_expr();
-            loop->body = parse_block();
-        }
-#endif
-        curr->next = parse_expr();
-        curr = curr->next;
-    }
-    curr->next = 0;
-    skip_token('}');
+    node->body = parse_block();
     curr_scope = curr_scope->parent;
     return node;
 }
@@ -448,10 +461,15 @@ int evaluate_expr(Node *node)
                 arg = arg->next;
             }
             assert(func->decl->body);
-            Node *node = func->decl->body->next;
+            return evaluate_expr(func->decl->body);
+       }
+        case NODE_BLOCK:
+        {
+            Node *curr = node->next;
             int v = 0;
             Scope *prev = curr_scope;
-            curr_scope = func->scope;
+            curr_scope = node->scope;
+            int c = 0;
             while (node)
             {
                 v = evaluate_expr(node);
@@ -459,6 +477,16 @@ int evaluate_expr(Node *node)
             }
             curr_scope = prev;
             return v;
+        }
+        case NODE_WHILE:
+        {
+#if 0
+            while (evaluate_expr(node->condition))
+            {
+                evaluate_expr(node->body);
+            }
+#endif
+            return (0);
         }
         default:
         {
@@ -574,7 +602,7 @@ void parse(Image *draw_image, Buffer *buffer, int mouse_scroll)
         scroll = 0;
     parser_y = -scroll;
     //crash when variable name is too long
-#if 1
+#if 0
     for (int i = 0; i < token_count; i++)
     {
         Token *token = &tokens[i];
