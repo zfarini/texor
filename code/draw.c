@@ -68,6 +68,8 @@ void draw_image(Image *draw_image, Image *img, int min_x, int min_y, int max_x, 
 void draw_rect(Image *draw_image, int min_x, int min_y, int max_x, int max_y,
                float r, float g, float b, float a)
 {
+    if (min_x > draw_image->width || min_y > draw_image->height)
+        return ;
     if (min_x < 0) min_x = 0;
     if (min_y < 0) min_y = 0;
     if (max_x > draw_image->width) max_x = draw_image->width;
@@ -109,6 +111,8 @@ void draw_rect_outline(Image *draw_image, int min_x, int min_y, int max_x, int m
 //TODO: kerning, antialiasing?
 void draw_char(Image *draw_image, int c, int min_x, int min_y, float fr, float fg, float fb)
 {
+    if (min_y > draw_image->height || min_x > draw_image->width)
+        return;
     if (c < 32 || c >= 127)
     {
         draw_rect(draw_image, min_x, min_y, min_x + font_advance_x,
@@ -154,6 +158,8 @@ void draw_char(Image *draw_image, int c, int min_x, int min_y, float fr, float f
 
 int draw_text(Image *draw_image, char *s, int min_x, int min_y, float fr, float fg, float fb)
 {
+    if (min_y > draw_image->height || min_x > draw_image->width)
+        return 0;
     float x = min_x;
     float y = min_y;
     for (int i = 0; s[i]; i++)

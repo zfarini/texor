@@ -4,24 +4,35 @@
 
 
 
+typedef int64_t i64;
+
 typedef struct Node Node;
 
 typedef enum Token_Type {
+    TOKEN_EOF,
     TOKEN_INT = 256,
     TOKEN_IDENTIFIER,
     TOKEN_WHILE,
+    TOKEN_IF,
+    TOKEN_AND, // &&
+    TOKEN_OR, // ||
+    TOKEN_EQUAL, // ==
+    TOKEN_NOT_EQUAL, // !=
+    TOKEN_GT_OR_EQUAL, // >=
+    TOKEN_LT_OR_EQUAL, // <=
 } Token_Type;
 
 typedef struct Token {
     int type;
     int start_pos;
     int end_pos;
-    int value;
+    i64 value;
     char name[128];
 } Token;
 
 typedef struct Var {
     char *name;
+    Token *decl;
     int value;
 }Var;
 
@@ -53,6 +64,7 @@ typedef enum Node_Type {
     NODE_BLOCK,
     NODE_ARGS,
     NODE_WHILE,
+    NODE_IF,
 } Node_Type;
 
 
@@ -60,6 +72,9 @@ struct Node {
     int type;
     Token *token;
     Node *args;
+    Node *block_first;
+    Node *next_if;
+    Node *else_node;
     Node *next;
     Node *body;
     Node *left;
