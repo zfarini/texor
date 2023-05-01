@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <xmmintrin.h>
+#include <semaphore.h>
 #include "SDL/SDL.h"
 #define STBI_ONLY_PNG
 #define STB_IMAGE_IMPLEMENTATION
@@ -99,16 +102,28 @@ void parse(Image *draw_image, Buffer *buffer, int mouse_scroll);
 
 int main(void)
 {
+#if THREADS
+	Thread_Info thread_infos[1];
+	for (int i = 0; i < array_length(thread_infos); i++)
+	{
+		thread_infos[i].id = i + 1;
+		pthread_create(&thread_infos[i].thread, 0, thread_proc, &thread_infos[i]);
+		//pthread_detach(thread_infos[i].thread);
+	}
+
+	sem_unlink("my_semaphore");
+	semaphore = sem_open("my_semaphore", O_CREAT | O_TRUNC, 0644, 0);
+#endif
     Image back_buffer = {
-        .width = 1280,
-        .height = 960,
+        .width = 1920,
+        .height = 1080,
     };
-    back_buffer.pitch = back_buffer.width;
+    back_buffer.pitch = (back_buffer.width + 3) / 4 * 4;
     int window_width = back_buffer.width;
     int window_height = back_buffer.height;
 
     SDL_Init(SDL_INIT_VIDEO);
-    SDL_Window *window = SDL_CreateWindow("texor", 0, 1500,
+    SDL_Window *window = SDL_CreateWindow("texor", 0, 0,
                                           window_width, window_height, SDL_WINDOW_SHOWN);
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
     SDL_SetWindowMinimumSize(window, window_width, window_height);
@@ -118,7 +133,9 @@ int main(void)
     SDL_Texture *screen_texture = SDL_CreateTexture(renderer,
                                                     SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING,
                                                     back_buffer.width, back_buffer.height);
-    back_buffer.pixels = calloc(back_buffer.width * back_buffer.height * sizeof(uint32_t), 1);
+	back_buffer.pixels = calloc(back_buffer.pitch * back_buffer.height * sizeof(uint32_t), 1);
+
+	assert(((uintptr_t)back_buffer.pixels & 15) == 0);
     assert(back_buffer.pixels);
     assert(window && renderer && screen_texture);
     g_screen_buffer = &back_buffer;

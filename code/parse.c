@@ -1,5 +1,6 @@
 #include "parse.h"
 
+#if 0 
 Node *null_node = &(Node){0};
 Node nodes[50005];
 int node_count;
@@ -932,3 +933,4 @@ void parse(Image *draw_image, Buffer *buffer, int mouse_scroll)
     save_global = *curr_scope;
     //printf("%d %d %d %d\n", buffer->size, token_count, node_count, var_count);
 }
+#endif

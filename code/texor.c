@@ -272,6 +272,7 @@ void redo_last_command(Buffer *buffer)
     buffer->selection = 0;
 }
 
+struct timespec start, finish;
 
 void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
 {
@@ -447,7 +448,7 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     //
     const int line_count = get_line_count(buffer);
     const int line_numbers_width = uint_len(line_count) * font_advance_x + 15;
-    const int text_offset_x = line_numbers_width; 
+    const int text_offset_x = line_numbers_width + 20; 
     const float dt = 1.0f / 60;
 
     //clear the screen
@@ -512,10 +513,14 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
         cursor_visual_x = text_col_to_visual_col(buffer, cursor_y, cursor_x);
     }
 #endif
-    const int first_line = (buffer->scroll_y) / font_line_height;
+    clock_t t = clock();
+
+
+	const int first_line = (buffer->scroll_y) / font_line_height;
     const int last_line = clamp(0, first_line + (draw_image->height / font_line_height) + 1, line_count);
     //draw the cursor
-    {
+#if 1
+	{
         float cursor_w = font_advance_x;
         float cursor_h = font_line_height;
         float r = 0.9, g = 0.6, b = 0;
@@ -531,9 +536,13 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
         min_y = marker_y * font_line_height - buffer->scroll_y;       
         draw_rect_outline(draw_image, min_x, min_y, min_x + cursor_w, min_y + cursor_h, 1, 1, 0, 0, 1);
     }
+#endif
 
     //draw the text
-    {
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+#if 1
+	{
         int string_c = 0;
         int inside_oneline_comment = 0;
         int inside_multiline_comment = 0;
@@ -618,6 +627,7 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
                 float r = 1, g = 1, b = 1;
                 if (keyword_index != -1)
                     r = 0.9, g = 0.7, b = 0;
+				r = 1, g = 1, b = 1;
                 while (is_identifier(buffer->data[i]))
                 {
                     draw_char(draw_image, buffer->data[i], x, y, r, g, b);
@@ -633,8 +643,30 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
             }
         }
     }
+#else
+
+    float y = first_line * font_line_height - buffer->scroll_y;
+    float x = -buffer->scroll_x + text_offset_x;
+    int i = get_pos_from_line_and_col(buffer, first_line, 0);
+	char *last = buffer->data + i;
+	for (; buffer->data[i]; i++)
+	{
+		if (buffer->data[i] == '\n')
+		{
+			draw_text(draw_image, last, x, y, 1, 1, 1);
+			y += font_line_height;
+			last = buffer->data + i + 1;
+			//draw_text(draw_image, last, x, y, 1, 1, 1);
+			//last = buffer->data + i + 1;
+		}
+		//y += font_line_height;
+	}
+#endif
+	main_is_waiting = 1;
     // draw the buffer->selection
-    if (buffer->selection)
+	
+    buffer->cursor_prev_pos = buffer->cursor_pos;
+	if (buffer->selection)
     {
         int line = first_line;
         float y = first_line * font_line_height - buffer->scroll_y;
@@ -677,7 +709,7 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
             char s[10];
             sprintf(s, "%d", line);
             float y = (line - 1) * font_line_height - buffer->scroll_y;
-            draw_text(draw_image, s, 5 + max_d - strlen(s) * font_advance_x, y, 
+            draw_text(draw_image, s, 25 + max_d - strlen(s) * font_advance_x, y, 
                         0.7, 0.7, 0.7);
         }
     }
@@ -711,20 +743,21 @@ void update_and_render_buffer(Buffer *buffer, Image *draw_image, Input *input)
     {
         int w = draw_image->width;
         int h = draw_image->height;
-        int min_x = draw_image->width - w - 10 - buffer->text_buffer.scroll_x;
-        int min_y = -buffer->text_buffer.scroll_y;
+        int min_x = draw_image->width - w - 10 - buffer->scroll_x;
+        int min_y = -buffer->scroll_y;
         min_x = 0;
         min_y = 0;
         int max_x = min_x + w;
         int max_y = min_y + h;
         static int frame = 0;
-        draw_image(draw_image, &test_image[(frame / 2) % test_image_count], min_x, min_y, max_x, max_y, 0.2);
+        draw_img(draw_image, &test_image[(frame / 2) % test_image_count], min_x, min_y, max_x, max_y, 0.4);
         frame++;
     }
 #endif
-    buffer->cursor_prev_pos = buffer->cursor_pos;
-    
 }
+
+int nframes = 0;
+double time_sum = 0;
 
 void update_and_render_the_editor(Image *draw_image, Input *input)
 {
@@ -736,13 +769,13 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
         buffers[0].data = load_entire_file(buffers[0].filename);
         buffers[0].size = strlen(buffers[0].data) + 1;
         buffers[0].min_x = 5;
-        buffers[0].max_x = draw_image->width / 2 - 5;
+        buffers[0].max_x = draw_image->width - 5;
         buffers[0].min_y = 5;
         buffers[0].max_y = draw_image->height - 5;
         buffer_count++;
 
         // TODO: when I load this it takes some time and mouse input become broken
-#if 0
+#if 1
         Image cow_image = load_image("cow.png");
         printf("%d %d\n", cow_image.width, cow_image.height);
         test_image_count = 36;
@@ -752,7 +785,6 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
         }
 #endif
         stbtt_fontinfo info;
-
         long size;
         unsigned char *font_contents;
         FILE *file = fopen("liberation-mono.ttf", "rb");
@@ -766,7 +798,7 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
 
         if (!stbtt_InitFont(&info, font_contents, 0))
             assert(0);
-        font_line_height = 18;
+        font_line_height = 40;
         float scale = stbtt_ScaleForPixelHeight(&info, font_line_height);
 
         int ascent, descent, lineGap;
@@ -797,7 +829,7 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
             //printf("%d %f\n", font_advance_x, ax * scale);
             //printf("%d %d %d %d\n", w, h, y, font_advance_x);
             int byteOffset = roundf(lsb * scale) + (y * font_advance_x);
-            font_bitmaps[c] = calloc(font_line_height * font_advance_x, sizeof(uint8_t));
+            font_bitmaps[c] = calloc(font_line_height * font_advance_x + 4, sizeof(uint8_t));
             stbtt_MakeCodepointBitmap(&info, font_bitmaps[c] + byteOffset, w, h, font_advance_x, scale, scale, c);
         }
         first_frame = 0;
@@ -805,9 +837,10 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
         free(font_contents);
     }
 
-    memset(draw_image->pixels, 0, draw_image->pitch * draw_image->height * 4);
 
-    clock_t t = clock();
+    memset(draw_image->pixels, 0, draw_image->pitch * draw_image->height * 4);
+	
+
 #if 1
     if (input->is_mouse_left_button_pressed && (!active_buffer || !active_buffer->selection))
     {
@@ -830,11 +863,13 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
     {
         Buffer *buffer = &buffers[i];
 
-        Image img;
+#if 1
+        Image img = *draw_image;
         img.width = buffer->max_x - buffer->min_x;
         img.height = buffer->max_y - buffer->min_y;
         img.pixels = draw_image->pixels + buffer->min_y * draw_image->pitch + buffer->min_x;
         img.pitch = draw_image->pitch;
+#endif
 
         Input buffer_input = {0};
         int is_pressed[512] = {0};
@@ -856,7 +891,7 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
         buffer_input.mouse_y = input->mouse_y - buffer->min_y;
         buffer_input.mouse_prev_x = input->mouse_prev_x - buffer->min_x;
         buffer_input.mouse_prev_y = input->mouse_prev_y - buffer->min_y;
-        update_and_render_buffer(buffer, &img, &buffer_input);
+        update_and_render_buffer(buffer, draw_image, &buffer_input);
         if (buffer == active_buffer)
             draw_rect_outline(draw_image, buffer->min_x, buffer->min_y,
                               buffer->max_x, buffer->max_y, 1, 1, 0, 0, 1);
@@ -883,12 +918,30 @@ void update_and_render_the_editor(Image *draw_image, Input *input)
         int scroll = 0;
         if (!active_buffer)
             scroll = input->mouse_scroll_y;
-        parse(&img, buffer, scroll);
+ //       parse(&img, buffer, scroll);
     }
-    t = clock() - t;
-    int ms = roundf((double)t / CLOCKS_PER_SEC * 1000.0f);
+
+	while (entry_completed < entry_count)
+	{
+		; // todo: do work instead of just waiting
+	}	
+	entry_count = 0;
+	entry_curr = 0;
+	entry_completed = 0;
+	clock_gettime(CLOCK_MONOTONIC, &finish);
+	double elapsed = (finish.tv_sec - start.tv_sec) * 1000;
+	elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000.0;
+	nframes++;
+	time_sum += elapsed;
+	printf("%f\n", elapsed);
+
+	if (should_quit)
+		printf("final time: %f\n", time_sum / nframes); 
+
     char buf[32];
-    sprintf(buf, "%d", ms);
-    draw_text(draw_image, buf, draw_image->width - strlen(buf) * font_advance_x,
-                0, 1, 1, 1);
+    sprintf(buf, "%d", (int)roundf(elapsed));
+   // draw_text(draw_image, buf, draw_image->width - strlen(buf) * font_advance_x,
+     //          0, 1, 1, 1);
+
+
 }
